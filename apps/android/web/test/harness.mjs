@@ -190,6 +190,14 @@ export async function createWalletContext(browser, { origin = "localhost", serve
     dappPage: null,
     dappTabId: 1000,
     waiters: [],
+    // Process-lifetime chrome.storage.session mirror (see `sessionStore`).
+    sessionStore: new Map(),
+    hellosThisProcess: 0,
+    /** Simulates Android killing the whole app process (memory is gone). */
+    killProcess() {
+      this.sessionStore.clear();
+      this.hellosThisProcess = 0;
+    },
     record(cmd) {
       this.commands.push(cmd);
       for (const waiter of [...this.waiters]) {
@@ -235,8 +243,17 @@ export async function createWalletContext(browser, { origin = "localhost", serve
     if (cmd.cmd === "hello") {
       if (source.frame === source.page.mainFrame()) {
         native.shellFrame = source.frame;
-        native.toShell({ type: "hello", sdkInt: 34, appVersion: "test" }).catch(() => {});
+        const freshProcess = native.hellosThisProcess === 0;
+        native.hellosThisProcess += 1;
+        native
+          .toShell({ type: "hello", sdkInt: 34, appVersion: "test", freshProcess, session: Object.fromEntries(native.sessionStore) })
+          .catch(() => {});
       }
+    }
+    if (cmd.cmd === "sessionStore" && source.frame === source.page.mainFrame()) {
+      if (cmd.op === "set") for (const [key, json] of Object.entries(cmd.items || {})) native.sessionStore.set(key, json);
+      else if (cmd.op === "remove") for (const key of cmd.keys || []) native.sessionStore.delete(key);
+      else if (cmd.op === "clear") native.sessionStore.clear();
     }
     native.record(cmd);
     if (cmd.cmd === "toDapp" && native.dappPage && cmd.tabId === native.dappTabId) {
@@ -300,6 +317,23 @@ export async function createWalletContext(browser, { origin = "localhost", serve
   }
 
   return { context, shell, native, openShell, openDapp, consoleErrors, walletOrigin, dumpConsole };
+}
+
+/**
+ * The frame showing an approval with heading `name`: the main wallet screen
+ * (side-panel mode, the Android default) or an overlay window (popup mode).
+ */
+export async function approvalFrame(page, name, timeout = 30_000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    for (const frame of page.frames()) {
+      if (!/\/index\.html/.test(frame.url())) continue;
+      const heading = frame.getByRole("heading", { name, exact: true });
+      if (await heading.first().isVisible().catch(() => false)) return frame;
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  throw new Error(`approval "${name}" not shown`);
 }
 
 export async function waitForFrame(page, predicate, timeout = 30_000) {

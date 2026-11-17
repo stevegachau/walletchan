@@ -21,6 +21,7 @@ class ShellBridge(
     private val http: HttpBridge,
     private val appVersion: String,
     private val appVersionCode: Long,
+    private val session: SessionStore = ProcessSessionStore,
 ) : WebViewCompat.WebMessageListener {
 
     interface Host {
@@ -34,6 +35,8 @@ class ShellBridge(
         fun notify(id: String, title: String, message: String)
         fun backUnhandled()
         fun scanQr()
+        fun wcSessions(count: Int)
+        fun requestAttention(title: String, message: String)
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -95,10 +98,28 @@ class ShellBridge(
                         .put("appVersion", appVersion)
                         .put("appVersionCode", appVersionCode)
                         .put("debug", BuildConfig.DEBUG)
+                        .put("freshProcess", session.takeFreshProcess())
+                        .put("session", session.snapshotJson())
                         .toString(),
                 )
                 host.onShellReady()
             }
+            "sessionStore" -> {
+                if (!isMainFrame) {
+                    Log.w(AppConfig.LOG_TAG, "sessionStore from a sub-frame ignored")
+                    return
+                }
+                // Never log keys or values: this holds unlocked-session material.
+                val result = session.apply(msg)
+                if (result != SessionStore.Result.OK) {
+                    Log.w(AppConfig.LOG_TAG, "sessionStore '${msg.optString("op")}' rejected: $result")
+                }
+            }
+            "wcSessions" -> host.wcSessions(msg.optInt("count", 0).coerceIn(0, MAX_WC_SESSIONS))
+            "requestAttention" -> host.requestAttention(
+                msg.optString("title", "").take(MAX_TITLE_CHARS).ifBlank { "WalletChan" },
+                msg.optString("message", "").take(MAX_MESSAGE_CHARS),
+            )
             "http" -> http.execute(msg) { json -> main.post { post(replyProxy, json) } }
             "httpAbort" -> http.abort(msg.opt("id"))
             "openExternal" -> msg.optStringOrNull("url")?.let(host::openExternal)
@@ -138,6 +159,10 @@ class ShellBridge(
         false
     }
 }
+
+private const val MAX_WC_SESSIONS = 999
+private const val MAX_TITLE_CHARS = 200
+private const val MAX_MESSAGE_CHARS = 1000
 
 internal fun JSONObject.optStringOrNull(key: String): String? =
     if (isNull(key)) null else optString(key, "").ifEmpty { null }

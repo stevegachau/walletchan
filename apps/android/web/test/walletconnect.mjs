@@ -11,7 +11,7 @@
  *   4. dApp gets a session with the wallet account
  *   5. dApp personal_sign -> approval overlay -> Sign -> signature recovers
  */
-import { createWalletContext, screenshot, overlayFrame, mainUiFrame } from "./harness.mjs";
+import { createWalletContext, screenshot, overlayFrame, mainUiFrame, approvalFrame as findApproval } from "./harness.mjs";
 import { onboard, failureArtifacts, PASSWORD, TEST_ADDRESS } from "./e2e.mjs";
 import { ethers, signClientModule } from "./deps.mjs";
 
@@ -110,17 +110,21 @@ export async function runWalletConnectSuite(browser, { pass, assert, relevantErr
     // The native QR scanner returns the URI to the shell.
     await w.shell.click("#wc-fab-scan").catch(() => {}); // hidden while locked; scan is also reachable via deep link
     await w.native.toShell({ type: "qrResult", text: uri });
-    await waitForToast(w.shell, /Unlock WalletChan/i, 15_000);
-    await screenshot(w.shell, "wc-01-unlock-to-connect");
-    pass("wc: scanning while locked asks to unlock first");
+    // Connecting needs only public addresses: no unlock prompt, no waiting.
+    const session = await withTimeout(approval(), 90_000, "session approval");
+    await waitForToast(w.shell, /Connected to/i, 20_000);
+    const toastsSeen = await toastText(w.shell);
+    assert(!/unlock/i.test(toastsSeen), "no unlock prompt while connecting (toast: " + toastsSeen + ")");
+    await screenshot(w.shell, "wc-01-connected-while-locked");
+    pass("wc: scanning while locked connects without asking to unlock");
+    await w.native.waitFor((cmd) => cmd.cmd === "wcSessions" && cmd.count >= 1, 15_000, "wcSessions count reported to native");
+    pass("wc: active session count reported to native (keeps the relay alive in the background)");
 
     await ui.getByLabel("Enter password to unlock", { exact: true }).fill(PASSWORD);
     await ui.getByRole("button", { name: "Unlock", exact: true }).click();
 
-    const session = await withTimeout(approval(), 90_000, "session approval");
     const accounts = session.namespaces.eip155.accounts.map((a) => a.split(":")[2].toLowerCase());
     assert(accounts.includes(TEST_ADDRESS.toLowerCase()), "session accounts " + accounts.join(","));
-    await waitForToast(w.shell, /Connected to/i, 20_000);
     await screenshot(w.shell, "wc-02-connected");
     pass(`wc: dApp session established over the real relay (${session.namespaces.eip155.accounts.length} accounts)`);
 
@@ -131,6 +135,7 @@ export async function runWalletConnectSuite(browser, { pass, assert, relevantErr
 
     const message = "Log in to WalletChan Android E2E";
     const hexMessage = "0x" + Buffer.from(message, "utf8").toString("hex");
+    const requestSentAt = Date.now();
     const signaturePromise = dapp.request({
       topic: session.topic,
       chainId: "eip155:1",
@@ -142,8 +147,8 @@ export async function runWalletConnectSuite(browser, { pass, assert, relevantErr
     // Android returns to that app.
     const commandMark = w.native.commands.length;
     await w.native.toShell({ type: "deepLink", url: "walletchan://wc?requestId=1&sessionTopic=" + session.topic, source: "external" });
-    const approvalFrame = await overlayFrame(w.shell, "/index.html", 60_000);
-    await approvalFrame.getByRole("heading", { name: "Signature request" }).waitFor({ timeout: 60_000 });
+    const approvalFrame = await findApproval(w.shell, "Signature request", 60_000);
+    console.log(`    timing: dApp request -> signature screen visible in ${Date.now() - requestSentAt} ms`);
     await w.shell.waitForTimeout(800);
     await screenshot(w.shell, "wc-03-signature-request");
     await approvalFrame.getByRole("button", { name: "Sign", exact: true }).click();

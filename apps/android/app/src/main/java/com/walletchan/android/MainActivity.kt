@@ -54,7 +54,10 @@ class MainActivity : AppCompatActivity(), ShellBridge.Host, DappBrowser.Host, Fi
     private lateinit var dapp: DappBrowser
     private lateinit var http: HttpBridge
     private lateinit var notifier: Notifier
+    private lateinit var keepAlive: WalletConnectKeepAlive
+    private lateinit var attention: AttentionRequester
     private var errorShown = false
+    private var resumed = false
 
     /** Deep links received before the shell said hello: (url, source). */
     private val pendingDeepLinks = ArrayDeque<Pair<String, String>>()
@@ -76,7 +79,10 @@ class MainActivity : AppCompatActivity(), ShellBridge.Host, DappBrowser.Host, Fi
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             val queued = pendingNotifications.toList()
             pendingNotifications.clear()
-            if (granted) queued.forEach { (id, title, message) -> notifier.post(id, title, message) }
+            if (granted) {
+                queued.forEach { (id, title, message) -> notifier.post(id, title, message) }
+                keepAlive.refreshNotification()
+            }
         }
 
     private val cameraPermission =
@@ -123,6 +129,8 @@ class MainActivity : AppCompatActivity(), ShellBridge.Host, DappBrowser.Host, Fi
         }
 
         notifier = Notifier(this)
+        keepAlive = WalletConnectKeepAlive(this)
+        attention = AttentionRequester(notifier) { resumed }
         http = HttpBridge(safeDefaultUserAgent())
         val packageInfo = packageManager.getPackageInfo(packageName, 0)
         shellBridge = ShellBridge(
@@ -151,8 +159,26 @@ class MainActivity : AppCompatActivity(), ShellBridge.Host, DappBrowser.Host, Fi
         if (!errorShown) handleIntent(intent)
     }
 
+    override fun onResume() {
+        super.onResume()
+        resumed = true
+        if (errorShown) return
+        attention.onResume()
+        keepAlive.onResume()
+        shellBridge.sendToShell(JSONObject().put("type", "appResumed"))
+    }
+
+    override fun onPause() {
+        resumed = false
+        if (!errorShown) shellBridge.sendToShell(JSONObject().put("type", "appPaused"))
+        super.onPause()
+    }
+
     override fun onDestroy() {
         if (!errorShown && ::dapp.isInitialized) {
+            attention.destroy()
+            // The wallet WebView (and its relay connection) dies with the Activity.
+            keepAlive.shutdown()
             dapp.destroy()
             mainWebView?.let { walletContainer.removeView(it); it.destroy() }
             mainWebView = null
@@ -161,8 +187,10 @@ class MainActivity : AppCompatActivity(), ShellBridge.Host, DappBrowser.Host, Fi
         super.onDestroy()
     }
 
-    // Deliberately no onPause/onResume WebView handling: the wallet background runs in
-    // the main WebView and must keep its timers; returning to the app never reloads.
+    // onResume/onPause only notify the shell (appResumed/appPaused), clear the attention
+    // notification and retry a deferred keep-alive start. Deliberately no WebView
+    // onPause/onResume/pauseTimers: the wallet background runs in the main WebView and
+    // must keep its timers; returning to the app never reloads.
 
     // ---- Main WebView ----
 
@@ -170,7 +198,9 @@ class MainActivity : AppCompatActivity(), ShellBridge.Host, DappBrowser.Host, Fi
         val wv = WebView(this)
         WebViews.applySecureDefaults(wv)
         wv.setBackgroundColor(ContextCompat.getColor(this, R.color.wc_background))
-        // Keep the wallet renderer important even while covered by the dApp browser.
+        // Keep the wallet renderer important even while covered by the dApp browser or the
+        // app is in the background (waivedWhenNotVisible=false); together with the
+        // WalletConnect foreground service this keeps the renderer from being killed.
         wv.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
         shellBridge.install(wv)
         wv.webViewClient = MainClient()
@@ -181,6 +211,11 @@ class MainActivity : AppCompatActivity(), ShellBridge.Host, DappBrowser.Host, Fi
         wv.loadUrl(AppConfig.SHELL_URL)
     }
 
+    /**
+     * After the renderer died. The new shell's `hello` gets `freshProcess:false` and the
+     * [ProcessSessionStore] snapshot, so the wallet restores chrome.storage.session
+     * (and its unlocked session) like a Chrome service-worker restart.
+     */
     private fun recreateMainWebView() {
         shellBridge.reset()
         mainWebView?.let { walletContainer.removeView(it); it.destroy() }
@@ -286,6 +321,24 @@ class MainActivity : AppCompatActivity(), ShellBridge.Host, DappBrowser.Host, Fi
         } else {
             Log.i(AppConfig.LOG_TAG, "Notification '$id' dropped: permission not granted")
         }
+    }
+
+    override fun wcSessions(count: Int) {
+        keepAlive.setCount(count)
+        // Heads-up "request waiting" notifications need POST_NOTIFICATIONS (Android 13+);
+        // a freshly connected app is the natural moment to ask.
+        if (count > 0 && resumed) askNotificationPermissionOnce()
+    }
+
+    override fun requestAttention(title: String, message: String) {
+        attention.request(title, message)
+    }
+
+    private fun askNotificationPermissionOnce() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || notifier.hasPermission()) return
+        if (notificationPermissionAsked) return
+        notificationPermissionAsked = true
+        notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 
     override fun backUnhandled() {

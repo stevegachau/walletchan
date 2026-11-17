@@ -15,9 +15,14 @@ compatibility family. Review implementation in this order:
 5. `proposal.ts`, `sessionProposal.ts`, `chainState.ts` — namespace approval,
    rejection metadata, and active-chain synchronization.
 6. `keepalive.ts`, `reset.ts` — relay liveness and replacement-wallet SDK
-   namespace teardown.
+   namespace teardown. Hosts that freeze the worker (the Android app in
+   `apps/android`) dispatch `walletchan:relay-nudge` on the worker global when
+   they resume; keepalive then fetches queued relay messages immediately.
 7. `client.ts`, `sessionCommands.ts`, `resultBridge.ts` — SDK lifecycle,
-   trusted-UI commands, and durable result delivery composition.
+   trusted-UI commands, and durable result delivery composition. In the
+   Android app (`__WALLETCHAN_PLATFORM__ === "android"`) the WalletKit
+   metadata advertises `redirect.native: "walletchan://"`; the extension
+   advertises no redirect.
 8. `payUnavailable.ts` — CSP-safe fail-closed alias for optional Pay support.
 
 Storage key names, namespace rotation, SDK listener generation checks, and

@@ -20,6 +20,7 @@ import {
   screenshot,
   overlayFrame,
   mainUiFrame,
+  approvalFrame,
 } from "./harness.mjs";
 import { runWalletConnectSuite } from "./walletconnect.mjs";
 
@@ -155,9 +156,21 @@ async function suiteCreate(browser, server) {
     await lockAndUnlock(w, ui, "create-05");
     pass("create: lock, wrong password rejected, unlock");
 
-    // Reload the whole shell: storage must persist (IndexedDB) and the
-    // in-memory session must not (locked, like a browser restart).
+    // Android killed the WebView renderer while the user was in another app:
+    // the shell reloads, but the app process (and its session mirror) lives
+    // on, like a Chrome service-worker restart. The wallet must stay unlocked.
+    await w.shell.waitForTimeout(1500);
+    await w.shell.reload();
+    const uiRestarted = await mainUiFrame(w.shell);
+    await waitForHome(uiRestarted);
+    assert(!(await uiRestarted.getByLabel("Enter password to unlock", { exact: true }).isVisible()), "still unlocked after WebView restart");
+    await screenshot(w.shell, "create-06a-webview-restart-unlocked");
+    pass("create: WebView restart keeps the wallet unlocked (session mirrored in native memory)");
+
+    // The whole app process was killed: storage must persist (IndexedDB) and
+    // the in-memory session must not (locked, like a browser restart).
     const before = await w.shell.evaluate(() => Object.keys(window.__walletchanShell.debug.storageSnapshot("local")).length);
+    w.native.killProcess();
     await w.shell.reload();
     const ui2 = await mainUiFrame(w.shell);
     await ui2.getByLabel("Enter password to unlock", { exact: true }).waitFor({ timeout: 60_000 });
@@ -168,7 +181,7 @@ async function suiteCreate(browser, server) {
     await ui2.getByLabel("Enter password to unlock", { exact: true }).fill(PASSWORD);
     await ui2.getByRole("button", { name: "Unlock", exact: true }).click();
     await waitForHome(ui2);
-    pass("create: shell reload keeps the wallet (locked) and unlocks");
+    pass("create: app process restart keeps the wallet (locked) and unlocks");
 
     // Android back with nothing to go back to -> backUnhandled.
     await w.native.toShell({ type: "back" });
@@ -268,24 +281,18 @@ async function suiteImport(browser, server, dappServer) {
         (e) => ({ error: e.message }),
       );
     });
-    const approval = await overlayFrame(w.shell, "/index.html", 30_000);
     await w.native.waitFor((c) => c.cmd === "showWallet", 10_000, "showWallet");
-    await unlockIfNeeded(approval).catch(() => {});
-    await approval.getByRole("heading", { name: "Connect site", exact: true }).waitFor({ timeout: 30_000 });
+    const approval = await approvalFrame(w.shell, "Connect site", 30_000);
     await screenshot(w.shell, "import-05-connect-approval");
     await approval.getByRole("button", { name: /^Connect(?: anyway)?$/ }).click();
     const accounts = await dapp.evaluate(() => window.__accounts);
     assert(accounts.ok && accounts.ok[0] && accounts.ok[0].toLowerCase() === TEST_ADDRESS.toLowerCase(), "accounts " + JSON.stringify(accounts));
-    pass("dapp: eth_requestAccounts approved in wallet overlay -> " + accounts.ok[0]);
+    pass("dapp: eth_requestAccounts approved in the wallet -> " + accounts.ok[0]);
+    assert((await w.shell.evaluate(() => window.__walletchanShell.debug.overlayCount())) === 0, "shown in the running wallet screen, no popup window");
 
-    // Approval overlay closes itself (window.close) and hands back to the dApp.
-    const closeDeadline = Date.now() + 15_000;
-    while (Date.now() < closeDeadline && (await w.shell.evaluate(() => window.__walletchanShell.debug.overlayCount())) > 0) {
-      await w.shell.waitForTimeout(200);
-    }
-    assert((await w.shell.evaluate(() => window.__walletchanShell.debug.overlayCount())) === 0, "approval overlay closed");
-    await w.native.waitFor((c) => c.cmd === "showDapp", 5_000, "showDapp");
-    pass("dapp: approval overlay closed and returned to the dApp (showDapp)");
+    // Once the wallet is back on its home screen it hands back to the dApp.
+    await w.native.waitFor((c) => c.cmd === "showDapp", 10_000, "showDapp");
+    pass("dapp: approval shown inline in the wallet screen, then returned to the dApp (showDapp)");
 
     const after = await dapp.evaluate(() => window.ethereum.request({ method: "eth_accounts" }));
     assert(after[0] && after[0].toLowerCase() === TEST_ADDRESS.toLowerCase(), "eth_accounts after connect");
@@ -299,8 +306,7 @@ async function suiteImport(browser, server, dappServer) {
         .request({ method: "personal_sign", params: ["0x48656c6c6f2066726f6d20416e64726f6964", a] })
         .then((s) => ({ ok: s }), (e) => ({ error: e.message }));
     }, TEST_ADDRESS);
-    const sigFrame = await overlayFrame(w.shell, "/index.html", 30_000);
-    await sigFrame.getByRole("heading", { name: "Signature request" }).waitFor({ timeout: 30_000 });
+    const sigFrame = await approvalFrame(w.shell, "Signature request", 30_000);
     await screenshot(w.shell, "import-06-signature");
     await sigFrame.getByRole("button", { name: "Sign", exact: true }).click();
     const sig = await dapp.evaluate(() => window.__sig);

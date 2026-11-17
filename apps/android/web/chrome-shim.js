@@ -23,9 +23,10 @@
  * Data crosses the frame boundary as JSON strings, which reproduces Chrome's
  * JSON-style message serialization and keeps objects in the right realm.
  *
- * chrome.sidePanel is intentionally NOT provided: the extension then takes
- * its Firefox-style popup path (approvals open as overlay windows), which
- * maps cleanly onto a phone.
+ * chrome.sidePanel is provided and the main wallet screen is the "side
+ * panel": approvals then appear in the already-running wallet UI (as in
+ * Chrome's side-panel mode) instead of booting a fresh popup window for each
+ * request, which took seconds on a phone.
  */
 (function () {
   "use strict";
@@ -467,6 +468,15 @@
     onClicked: namedEvent("action.onClicked"),
   };
 
+  const sidePanel = {
+    open: apiFn("sidePanel.open"),
+    close: apiFn("sidePanel.close"),
+    setOptions: apiFn("sidePanel.setOptions"),
+    getOptions: apiFn("sidePanel.getOptions"),
+    setPanelBehavior: apiFn("sidePanel.setPanelBehavior"),
+    getPanelBehavior: apiFn("sidePanel.getPanelBehavior"),
+  };
+
   const offscreen = {
     createDocument: apiFn("offscreen.createDocument"),
     closeDocument: apiFn("offscreen.closeDocument"),
@@ -546,6 +556,7 @@
     alarms,
     notifications,
     action,
+    sidePanel,
     offscreen,
     declarativeNetRequest,
     extension,

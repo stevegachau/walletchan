@@ -52,12 +52,20 @@ same code can be tested at `http://localhost:<port>/` in desktop Chromium.
   when `WalletChanNative` exists; otherwise plain fetch (desktop testing).
 - External URLs (`chrome.tabs.create` with http(s) url, `window.open`) go to the
   in-app dApp browser (`openDapp`); `openExternal` is for the system browser.
-- `chrome.sidePanel` is deliberately absent, so the extension uses its
-  Firefox-style popup path: approvals open as overlay windows (the shell sends
-  `showWallet`, and `showDapp` when the overlay that the dApp triggered closes).
-  The full-screen UI is classified as the side-panel surface (inline flows, its
-  `window.close()` is a no-op); overlays are popup windows / tabs. Window 1 is
-  the phone "browser window" holding the dApp tab (or a synthetic New Tab, id 1).
+- `chrome.sidePanel` is provided and side-panel mode is the default (the shell
+  sets `sync.sidePanelMode = true` once, meta flag `androidPanelModeDefaulted`).
+  The full-screen wallet UI is the side panel (`getContexts` → `SIDE_PANEL`, it
+  answers `ping`), so approvals appear inline in the already-running UI
+  (~0.4 s) instead of booting a popup per request (~3 s desktop, far slower on
+  a phone). The shell watches `newPending…Request` broadcasts: it sends
+  `showWallet` + `requestAttention`, and when the UI is back on its home screen
+  it returns to the caller (`showDapp` for the in-app dApp browser,
+  `backUnhandled` for an app that deep-linked us). If the user switches to popup
+  mode in settings, approvals open as overlay windows with the same return
+  behaviour. Window 1 is the phone "browser window" holding the dApp tab (or a
+  synthetic New Tab, id 1).
+- WalletConnect pairing needs no unlock (public addresses only); signing
+  requests ask for the password in the wallet UI.
 
 ## Native bridge (main WebView)  — name: `WalletChanNative`
 
@@ -69,7 +77,7 @@ JS → native (`WalletChanNative.postMessage(JSON.stringify(msg))`):
 
 | msg | meaning |
 |---|---|
-| `{cmd:"hello"}` | sent by shell top frame on boot. Native stores this frame's `replyProxy` as the shell channel (only if `isMainFrame`). Native replies `{type:"hello", sdkInt, appVersion}`. |
+| `{cmd:"hello"}` | sent by shell top frame on boot. Native stores this frame's `replyProxy` as the shell channel (only if `isMainFrame`). Native replies `{type:"hello", sdkInt, appVersion, freshProcess, session}` (see "Process-lifetime session storage"). |
 | `{cmd:"http", id, method, url, headers:{k:v}, bodyBase64:string\|null}` | native performs the request (no CORS), replies to the same proxy `{type:"http", id, ok, status, statusText, headers:{k:v}, bodyBase64, error?:string}` (`error` set on network failure, then status 0). |
 | `{cmd:"openExternal", url}` | open in system browser (http/https/mailto only). |
 | `{cmd:"openDapp", url?}` | show dApp browser; load `url` if given (else show with URL bar focused). |
@@ -80,6 +88,11 @@ JS → native (`WalletChanNative.postMessage(JSON.stringify(msg))`):
 | `{cmd:"notify", id, title, message}` | post an Android notification. |
 | `{cmd:"backUnhandled"}` | shell had nothing to go back to → native `moveTaskToBack(true)`. |
 | `{cmd:"log", level, message}` | forward to logcat. |
+| `{cmd:"sessionStore", op:"set", items:{key: jsonString}}` | mirror `chrome.storage.session` writes into native process memory. Shell main frame only. All-or-nothing: rejected (nothing applied) if any value is not a string or the store would exceed the cap. No reply. |
+| `{cmd:"sessionStore", op:"remove", keys:[key…]}` | remove keys from the native mirror (rejected if any key is not a string). Shell main frame only. No reply. |
+| `{cmd:"sessionStore", op:"clear"}` | empty the native mirror. Shell main frame only. No reply. |
+| `{cmd:"wcSessions", count:int}` | number of connected WalletConnect apps. `count>0` → start/update the keep-alive foreground service; `0` → stop it. Send whenever the count changes (and after boot). Clamped to 0..999. |
+| `{cmd:"requestAttention", title, message}` | a dApp request is waiting. If MainActivity is not resumed now **and** still not resumed 700 ms later, native posts a heads-up notification (tap opens the app). Ignored while resumed. `title` defaults to "WalletChan" (≤200 chars), `message` ≤1000 chars. |
 
 Additive details implemented by native (all optional; older callers unaffected):
 - `hello` reply also carries `appVersionCode` and `debug`. After every `hello`,
@@ -107,6 +120,53 @@ Native → shell (`shellReplyProxy.postMessage(JSON.stringify(msg))`, received v
 | `{type:"dappTabRemoved", tabId}` | dApp browser closed (feeds `chrome.tabs.onRemoved`). |
 | `{type:"dappVisible", visible:boolean}` | which surface is in front. |
 | `{type:"deepLink", url}` | app opened via `wc:` / `walletchan:` intent. |
+| `{type:"appResumed"}` | `MainActivity.onResume` (app back in front). Sent only if the shell is ready; never queued. |
+| `{type:"appPaused"}` | `MainActivity.onPause` (user left the app, screen off, scanner/permission dialog on top). Sent only if the shell is ready; never queued. |
+
+## Process-lifetime session storage
+
+Chrome keeps `chrome.storage.session` across service-worker restarts and clears it
+only when the browser process exits. The shell's in-memory copy dies whenever the
+main WebView's renderer dies (Android kills it while the user is in another app),
+and `onRenderProcessGone` → `recreateMainWebView()` reloads the shell; without a
+copy the wallet loses its unlocked session. So:
+
+- The shell mirrors every `storage.session` change to native with
+  `sessionStore` (above). Native keeps it in a process-wide Kotlin `object`
+  (`ProcessSessionStore`): memory only, never written to disk, never logged.
+  Total size cap: 8 Mi UTF-16 code units (sum of key + value lengths); a `set`
+  that would exceed it is rejected as a whole (logged without keys/values).
+- The `hello` reply carries `session: {key: jsonString}` (snapshot of the
+  native mirror) and `freshProcess: boolean` — `true` only for the first main-frame
+  `hello` handled in this app process; `false` after a renderer-death recreation,
+  a shell reload, or MainActivity being recreated in a live process. On
+  `freshProcess:false` the shell restores `storage.session` from `session`
+  (like a service-worker restart); on `true` there is nothing to restore (like a new
+  browser process).
+- Process death clears it (same as Chrome exiting).
+
+## Background keep-alive (WalletConnect)
+
+- While `wcSessions.count > 0`, native runs `WalletConnectService`, a
+  foreground service (`foregroundServiceType="specialUse"`, subtype "Keeps the
+  WalletConnect relay connection alive so dApp requests reach the wallet") whose
+  only job is an ongoing, silent notification on the "Connection status" channel
+  (IMPORTANCE_LOW): title "WalletChan", text "Connected to N app(s) via
+  WalletConnect"; tapping brings the existing singleTask MainActivity forward
+  (no recreation). This keeps the process — and the main WebView renderer, bound
+  `RENDERER_PRIORITY_IMPORTANT` with `waivedWhenNotVisible=false` — out of the
+  cached/frozen state so the relay websocket keeps delivering requests.
+- Android 12+ refuses foreground-service starts from the background; native then
+  remembers the desired count and retries on the next `onResume`. Count changes
+  while the service runs only update the notification text. The service is
+  stopped when the count drops to 0 and when MainActivity is destroyed (the
+  WebView, and with it the relay, is gone). It is `START_NOT_STICKY`.
+- Without POST_NOTIFICATIONS the service still runs (notification not shown).
+  On Android 13+ native asks for the permission once when `wcSessions` reports
+  a count > 0 while the app is in front (needed for `requestAttention`).
+- `requestAttention` notifications use the "Requests" channel (IMPORTANCE_HIGH,
+  heads-up). A newer request replaces the previous notification; it is cancelled
+  in `onResume`.
 
 ## dApp browser (second WebView, same Activity)
 
@@ -170,5 +230,11 @@ approval windows). Mobile additions:
 
 - Single `MainActivity`, `singleTask`, both WebViews in one FrameLayout so the
   background iframe stays alive. Do not call `pauseTimers()`.
+- `onResume`/`onPause` never touch the WebViews; they only send
+  `appResumed`/`appPaused`, cancel the attention notification and retry a
+  deferred keep-alive start. The main WebView is (re)loaded only on create,
+  after renderer death (`recreateMainWebView`, resets the shell channel) and if
+  its top frame ever leaves the app origin; intents (`onNewIntent`) only deliver
+  `deepLink`s.
 - Back: if dApp visible → dApp history back, else close dApp browser; if wallet
   visible → send `{type:"back"}` to shell.

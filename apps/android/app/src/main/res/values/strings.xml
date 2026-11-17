@@ -11,6 +11,14 @@
     <string name="no_app_for_link">No app can open this link</string>
     <string name="notification_channel_name">Wallet activity</string>
     <string name="notification_channel_description">Transaction, signature and connection updates from WalletChan</string>
+    <string name="requests_channel_name">Requests</string>
+    <string name="requests_channel_description">Alerts when a connected app is waiting for you to approve a request</string>
+    <string name="connection_channel_name">Connection status</string>
+    <string name="connection_channel_description">Ongoing notice while WalletChan keeps WalletConnect apps connected</string>
+    <plurals name="wc_connected_apps">
+        <item quantity="one">Connected to %d app via WalletConnect</item>
+        <item quantity="other">Connected to %d apps via WalletConnect</item>
+    </plurals>
     <string name="webview_error_title">Update Android System WebView</string>
     <string name="webview_error_message">WalletChan runs inside Android System WebView, and the version on this device is too old or unavailable. Please update (or enable) Android System WebView from the Play Store, then reopen WalletChan.</string>
     <string name="webview_error_button">Update WebView</string>

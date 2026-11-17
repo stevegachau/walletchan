@@ -133,10 +133,29 @@ async function runKeepaliveTick(): Promise<void> {
   }
 }
 
+/**
+ * Hosts that freeze the worker while backgrounded (the Android app) dispatch
+ * this event when they come back so queued relay messages are fetched at once
+ * instead of on the next interval tick.
+ */
+const RELAY_NUDGE_EVENT = "walletchan:relay-nudge";
+let nudgeListenerInstalled = false;
+
+function installRelayNudgeListener(): void {
+  if (nudgeListenerInstalled) return;
+  const target = globalThis as { addEventListener?: (type: string, listener: () => void) => void };
+  if (typeof target.addEventListener !== "function") return;
+  target.addEventListener(RELAY_NUDGE_EVENT, () => {
+    if (keepaliveTimer) void runKeepaliveTick();
+  });
+  nudgeListenerInstalled = true;
+}
+
 export function startWalletConnectKeepalive(
   walletKitProvider: () => WalletConnectKeepaliveKit | null,
 ): void {
   getWalletKit = walletKitProvider;
+  installRelayNudgeListener();
   if (keepaliveTimer) return;
 
   keepaliveTimer = setInterval(() => {

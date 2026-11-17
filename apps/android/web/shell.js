@@ -212,6 +212,19 @@
     }
     emitStorageChanged(area, changes);
     if (PERSISTENT_AREAS.includes(area)) await persist(area, puts, []);
+    else if (area === "session" && puts.length) mirrorSession({ op: "set", items: Object.fromEntries(puts) });
+  }
+
+  /**
+   * chrome.storage.session lives in the shell's memory, which dies whenever
+   * Android kills/recreates the WebView renderer (common while the user is in
+   * another app). Chrome keeps storage.session across service-worker restarts
+   * and only drops it when the browser exits, and the extension relies on that
+   * to restore an unlocked session. So mirror it into the app process's memory
+   * (never disk); `hello` hands it back after a WebView restart.
+   */
+  function mirrorSession(op) {
+    nativePost(Object.assign({ cmd: "sessionStore" }, op));
   }
 
   async function storageRemove(area, keys) {
@@ -227,6 +240,7 @@
     }
     emitStorageChanged(area, changes);
     if (PERSISTENT_AREAS.includes(area) && deletes.length) await persist(area, [], deletes);
+    else if (area === "session" && deletes.length) mirrorSession({ op: "remove", keys: deletes });
   }
 
   async function storageClear(area) {
@@ -236,6 +250,7 @@
     map.clear();
     emitStorageChanged(area, changes);
     if (PERSISTENT_AREAS.includes(area)) await persist(area, [], [], true);
+    else if (area === "session") mirrorSession({ op: "clear" });
   }
 
   function storageBytesInUse(area, keys) {
@@ -798,6 +813,10 @@
     if (pendingReturn && Date.now() < pendingReturn.until && !isOnboardingUrl(absolute)) {
       overlay.returnToCaller = pendingReturn.source;
     }
+    if (!isOnboardingUrl(absolute)) {
+      // Native posts this only if the app isn't in the foreground.
+      nativePost({ cmd: "requestAttention", title: "WalletChan", message: "A dApp is waiting for your approval. Tap to review." });
+    }
     frame.style.zIndex = String(overlay.zIndex);
     overlayWindows.set(windowId, overlay);
     overlayTabs.set(tabId, { id: tabId, windowId, url: absolute, title: "WalletChan", status: "loading" });
@@ -868,6 +887,92 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Requests shown inline in the main wallet screen (side-panel mode)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * In side-panel mode the background announces each new request to the open
+   * wallet UI (`newPending…Request`), which switches to its confirmation view.
+   * Bring the wallet forward, and once the UI is back on its home screen (all
+   * queued requests handled) return to whoever sent it, like closing a popup.
+   */
+  let inlineRequest = null; // { since, returnTo: "external" | "dapp" | null, leftHome }
+  const INLINE_REQUEST = /^newPending[A-Za-z]*Request$|^newSafeProposalRequest$/;
+
+  busObservers.push((message) => {
+    if (!message || typeof message.type !== "string" || !INLINE_REQUEST.test(message.type)) return;
+    // Deferred: let the overlay path (popup mode) register first, if used.
+    setTimeout(onInlineRequest, 0);
+  });
+
+  function onInlineRequest() {
+    if (overlayWindows.size > 0) return; // popup mode: overlays handle returning
+    const armed = pendingReturn && Date.now() < pendingReturn.until ? pendingReturn.source : null;
+    const returnTo = dappVisible && dappTab ? "dapp" : armed;
+    if (!inlineRequest) inlineRequest = { since: Date.now(), returnTo, leftHome: false };
+    else if (returnTo && !inlineRequest.returnTo) inlineRequest.returnTo = returnTo;
+    nativePost({ cmd: "showWallet" });
+    nativePost({ cmd: "requestAttention", title: "WalletChan", message: "A dApp is waiting for your approval. Tap to review." });
+  }
+
+  /** Called from the 500 ms UI tick. */
+  function checkInlineRequestDone() {
+    if (!inlineRequest) return;
+    if (overlayWindows.size > 0) {
+      inlineRequest = null;
+      return;
+    }
+    const home = uiOnHomeScreen();
+    if (!home) {
+      inlineRequest.leftHome = true;
+    } else if (inlineRequest.leftHome) {
+      const target = inlineRequest.returnTo;
+      inlineRequest = null;
+      if (target) returnToCaller(target);
+    } else if (Date.now() - inlineRequest.since > 120_000) {
+      inlineRequest = null;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // WalletConnect liveness on Android
+  // ---------------------------------------------------------------------------
+
+  /**
+   * While any WalletConnect session exists, native runs a foreground service so
+   * Android doesn't freeze/kill the app (and its relay socket) in the
+   * background. Requests then arrive immediately.
+   */
+  let reportedWcSessions = -1;
+  function reportWalletConnectSessions(count) {
+    const n = Number.isFinite(count) ? count : 0;
+    if (n === reportedWcSessions) return;
+    reportedWcSessions = n;
+    nativePost({ cmd: "wcSessions", count: n });
+  }
+
+  async function refreshWalletConnectSessionCount() {
+    const response = await sendAsWalletUi({ type: "walletConnectGetSessions" }).catch(() => null);
+    if (response && Array.isArray(response.sessions)) reportWalletConnectSessions(response.sessions.length);
+  }
+
+  busObservers.push((message) => {
+    if (message && message.type === "walletConnectSessionsChanged" && Array.isArray(message.sessions)) {
+      reportWalletConnectSessions(message.sessions.length);
+    }
+  });
+
+  /** Asks the background to fetch queued relay messages right now. */
+  function nudgeRelay() {
+    const frame = document.querySelector('iframe[data-wc-role="background"]');
+    try {
+      frame && frame.contentWindow && frame.contentWindow.dispatchEvent(new Event("walletchan:relay-nudge"));
+    } catch (error) {
+      warn("relay nudge failed", error);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Returning to the app that handed us a WalletConnect link
   // ---------------------------------------------------------------------------
 
@@ -891,6 +996,7 @@
   function armReturnToCaller(source) {
     if (source !== "external" && source !== "dapp") return;
     pendingReturn = { source, until: Date.now() + RETURN_WINDOW_MS };
+    if (inlineRequest && !inlineRequest.returnTo) inlineRequest.returnTo = source;
     // The relay may have delivered the request before the link arrived.
     for (const overlay of overlayWindows.values()) {
       const tab = overlayTabs.get(overlay.tabId);
@@ -1501,6 +1607,16 @@
       nativePost({ cmd: "showWallet" });
     },
 
+    // --- sidePanel: the main wallet screen is the panel ------------------
+    "sidePanel.open": () => {
+      nativePost({ cmd: "showWallet" });
+    },
+    "sidePanel.close": () => undefined,
+    "sidePanel.setOptions": () => undefined,
+    "sidePanel.getOptions": () => ({ enabled: true, path: "index.html" }),
+    "sidePanel.setPanelBehavior": () => undefined,
+    "sidePanel.getPanelBehavior": () => ({ openPanelOnActionClick: false }),
+
     // --- offscreen -------------------------------------------------------
     "offscreen.createDocument": (ctx, [params]) => {
       if (offscreenFrame) throw new Error("Only a single offscreen document may be created.");
@@ -1614,19 +1730,6 @@
 
   let walletConnectBusy = false;
 
-  async function waitForUnlock(timeoutMs) {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      try {
-        if ((await sendAsWalletUi({ type: "isWalletUnlocked" })) === true) return true;
-      } catch {
-        /* background busy; retry */
-      }
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-    }
-    return false;
-  }
-
   async function pairWalletConnect(uri, source) {
     nativePost({ cmd: "showWallet" });
     if (walletConnectBusy) {
@@ -1640,15 +1743,8 @@
         showToast("Set up your wallet before connecting a dApp", "error", 5000);
         return;
       }
-      let unlocked = await sendAsWalletUi({ type: "isWalletUnlocked" }).catch(() => false);
-      if (unlocked !== true) {
-        showToast("Unlock WalletChan to connect the dApp", "info", 0);
-        unlocked = await waitForUnlock(5 * 60_000);
-        if (!unlocked) {
-          showToast("WalletConnect cancelled: wallet stayed locked", "error", 5000);
-          return;
-        }
-      }
+      // No unlock needed: pairing and session approval use public addresses
+      // only. Signing requests ask for the password in their own window.
       showToast("Connecting via WalletConnect…", "info", 0);
       const before = await sendAsWalletUi({ type: "walletConnectGetSessions" }).catch(() => null);
       const knownTopics = new Set(((before && before.sessions) || []).map((s) => s.topic));
@@ -1816,7 +1912,16 @@
     if (!msg || typeof msg !== "object") return;
     switch (msg.type) {
       case "hello":
-        log("native hello", msg.sdkInt, msg.appVersion);
+        log("native hello", msg.sdkInt, msg.appVersion, "freshProcess:", msg.freshProcess);
+        if (helloResolve) {
+          helloResolve(msg);
+          helloResolve = null;
+        }
+        break;
+      case "appResumed":
+        // Back from another app: fetch queued WalletConnect requests now
+        // instead of on the next 20 s keepalive tick.
+        nudgeRelay();
         break;
       case "http": {
         const pending = pendingHttp.get(msg.id);
@@ -1851,6 +1956,7 @@
         else if (msg.error && msg.error !== "cancelled" && msg.error !== "busy") showToast("Scan failed: " + msg.error, "error");
         break;
       case "deepLink":
+        nudgeRelay();
         if (!handleWalletConnectText(msg.url, msg.source)) {
           try {
             const parsed = new URL(msg.url);
@@ -1895,9 +2001,11 @@
   function updateChrome() {
     const fabs = document.getElementById("wc-fabs");
     if (fabs) fabs.hidden = overlayWindows.size > 0 || !uiOnHomeScreen();
+    checkInlineRequestDone();
   }
 
   let manifest = null;
+  let helloResolve = null;
 
   async function boot() {
     try {
@@ -1915,10 +2023,39 @@
       db = null;
     }
 
+    let hello = null;
     if (nativeBridge) {
+      const helloReply = new Promise((resolve) => {
+        helloResolve = resolve;
+      });
       nativeBridge.onmessage = (event) => onNativeMessage(event && event.data);
       nativePost({ cmd: "hello" });
+      // The session snapshot must be in place before the background starts.
+      hello = await Promise.race([helloReply, new Promise((resolve) => setTimeout(() => resolve(null), 2000))]);
     }
+    // Side-panel mode makes requests appear in the running wallet screen.
+    // Default it on once (older installs stored nothing or "false" only
+    // because the API was missing); the user can still switch in settings.
+    if (!meta.has("androidPanelModeDefaulted")) {
+      storageAreas.sync.set("sidePanelMode", "true");
+      storageAreas.sync.set("isArcBrowser", "false");
+      meta.set("androidPanelModeDefaulted", "true");
+      await Promise.all([
+        persist("sync", [["sidePanelMode", "true"], ["isArcBrowser", "false"]], []),
+        persist("meta", [["androidPanelModeDefaulted", "true"]], []),
+      ]).catch((error) => warn("panel mode default persist failed", error));
+    }
+
+    const restoredSession = hello && hello.session && typeof hello.session === "object" ? hello.session : null;
+    if (restoredSession) {
+      for (const key of Object.keys(restoredSession)) {
+        if (typeof restoredSession[key] === "string") storageAreas.session.set(key, restoredSession[key]);
+      }
+      log("restored", storageAreas.session.size, "session storage keys after a WebView restart");
+    }
+    // A WebView restart inside a live app process is a "service worker
+    // restart", not a browser start: don't fire runtime.onStartup for it.
+    const browserStart = !hello || hello.freshProcess !== false;
 
     await startBackground();
     backgroundReady = true;
@@ -1929,7 +2066,7 @@
     const version = manifest.version;
     if (previous === null) emitEvent("runtime.onInstalled", [{ reason: "install" }], "background");
     else if (previous !== version) emitEvent("runtime.onInstalled", [{ reason: "update", previousVersion: previous }], "background");
-    else emitEvent("runtime.onStartup", [], "background");
+    else if (browserStart) emitEvent("runtime.onStartup", [], "background");
     if (previous !== version) {
       meta.set("installedVersion", JSON.stringify(version));
       persist("meta", [["installedVersion", JSON.stringify(version)]], []).catch((error) => warn("meta persist failed", error));
@@ -1937,6 +2074,7 @@
 
     // Flush messages that raced the background start.
     for (const run of queuedUntilBackground.splice(0)) run();
+    setTimeout(() => void refreshWalletConnectSessionCount(), 3000);
 
     // Give onInstalled a moment to open onboarding before the UI decides.
     setTimeout(createMainUi, previous === null ? 300 : 0);
