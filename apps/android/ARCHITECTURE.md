@@ -93,6 +93,10 @@ JS → native (`WalletChanNative.postMessage(JSON.stringify(msg))`):
 | `{cmd:"sessionStore", op:"clear"}` | empty the native mirror. Shell main frame only. No reply. |
 | `{cmd:"wcSessions", count:int}` | number of connected WalletConnect apps. `count>0` → start/update the keep-alive foreground service; `0` → stop it. Send whenever the count changes (and after boot). Clamped to 0..999. |
 | `{cmd:"requestAttention", title, message}` | a dApp request is waiting. If MainActivity is not resumed now **and** still not resumed 700 ms later, native posts a heads-up notification (tap opens the app). Ignored while resumed. `title` defaults to "WalletChan" (≤200 chars), `message` ≤1000 chars. |
+| `{cmd:"biometricStatus", id}` | biometric unlock state. Shell main frame only. Reply `biometricStatus` (see "Biometric unlock"). |
+| `{cmd:"biometricEnroll", id, secret, title?, subtitle?}` | store `secret` (the wallet password) behind a strong-biometric prompt. Shell main frame only. Reply `biometricEnroll`. |
+| `{cmd:"biometricUnlock", id, title?, subtitle?}` | biometric prompt, then return the stored secret. Shell main frame only. Reply `biometricUnlock`. |
+| `{cmd:"biometricDisable", id}` | delete the key and stored secret. Shell main frame only. Reply `biometricDisable`. |
 
 Additive details implemented by native (all optional; older callers unaffected):
 - `hello` reply also carries `appVersionCode` and `debug`. After every `hello`,
@@ -122,6 +126,7 @@ Native → shell (`shellReplyProxy.postMessage(JSON.stringify(msg))`, received v
 | `{type:"deepLink", url}` | app opened via `wc:` / `walletchan:` intent. |
 | `{type:"appResumed"}` | `MainActivity.onResume` (app back in front). Sent only if the shell is ready; never queued. |
 | `{type:"appPaused"}` | `MainActivity.onPause` (user left the app, screen off, scanner/permission dialog on top). Sent only if the shell is ready; never queued. |
+| `{type:"biometricStatus" \| "biometricEnroll" \| "biometricUnlock" \| "biometricDisable", id, …}` | replies to the `biometric*` commands, posted to the reply proxy of the frame that asked (see "Biometric unlock"). |
 
 ## Process-lifetime session storage
 
@@ -144,6 +149,57 @@ copy the wallet loses its unlocked session. So:
   (like a service-worker restart); on `true` there is nothing to restore (like a new
   browser process).
 - Process death clears it (same as Chrome exiting).
+
+## Biometric unlock (opt-in)
+
+The wallet unlocks with a password typed into its unlock screen. After a
+successful manual unlock, and only with the user's consent, the shell may hand
+native the password once; native keeps it encrypted under an Android Keystore
+key that is usable only right after a Class 3 ("strong") biometric
+authentication, and later returns it so the shell can fill the unlock form.
+
+Commands (JS → native, **shell main frame only**: sub-frame requests are
+ignored with no reply). Every reply echoes `id` (any JSON value) and goes to
+the reply proxy of the frame that asked, never to another document:
+
+| request | reply |
+|---|---|
+| `{cmd:"biometricStatus", id}` | `{type:"biometricStatus", id, available, enrolled, reason?}`. `available` = `BiometricManager.canAuthenticate(BIOMETRIC_STRONG) == BIOMETRIC_SUCCESS`. `enrolled` = a stored ciphertext exists **and** its key exists and is not invalidated. `reason` (only when something is off): `"no_hardware"`, `"hw_unavailable"`, `"none_enrolled"`, `"security_update_required"`, `"unsupported"`, `"unknown"` (why `available` is false; takes precedence), else `"invalidated"` (the stored secret was unusable and has been deleted) or `"key_error"` (Keystore check failed; nothing deleted). Never busy. |
+| `{cmd:"biometricEnroll", id, secret, title?, subtitle?}` | `{type:"biometricEnroll", id, ok:true}` or `{…, ok:false, error}` with `error` = `"cancelled"` (user cancelled / app not in front), `"unavailable"`, `"failed"`, `"busy"`, `"lockout"`, `"invalid_secret"` (missing, non-string or empty) or `"secret_too_long"` (> 4096 UTF-16 units). |
+| `{cmd:"biometricUnlock", id, title?, subtitle?}` | `{type:"biometricUnlock", id, ok:true, secret}` or `{…, ok:false, error}` with `error` = `"cancelled"` (incl. "Use password" and app not in front), `"not_enrolled"`, `"invalidated"`, `"lockout"`, `"failed"`, `"busy"`, or `"unavailable"` (prompt reports no usable biometric hardware/enrollment). |
+| `{cmd:"biometricDisable", id}` | `{type:"biometricDisable", id, ok:true}` (or `ok:false, error:"failed"` if the Keystore refused; the stored ciphertext is deleted regardless). Cancels a showing prompt first (that request gets `"cancelled"`). |
+
+Behaviour:
+- Prompts: androidx `BiometricPrompt`, `BIOMETRIC_STRONG` only (no device
+  credential fallback), with a `CryptoObject`. Enroll: title default
+  "Enable fingerprint unlock", negative button "Cancel". Unlock: title default
+  "Unlock WalletChan", negative button "Use password". `title` ≤100 and
+  `subtitle` ≤200 chars (truncated; blank/non-string ignored).
+- One prompt at a time: an enroll/unlock while one is in flight gets
+  `error:"busy"`. The prompt does not recreate MainActivity or the WebViews
+  (it may cause `appPaused`/`appResumed`). FLAG_SECURE is unchanged.
+- Key: AES-256-GCM, alias `walletchan_biometric_v1`, `setUserAuthenticationRequired(true)`,
+  `setInvalidatedByBiometricEnrollment(true)`, API 30+
+  `setUserAuthenticationParameters(0, AUTH_BIOMETRIC_STRONG)`, below
+  `setUserAuthenticationValidityDurationSeconds(-1)` (auth per use). StrongBox
+  when the device has it, falling back to the TEE. **Every enroll deletes and
+  re-creates the key and deletes the old ciphertext before prompting**, so a
+  cancelled re-enroll leaves biometric unlock disabled (`enrolled:false`).
+- Storage: base64 IV + ciphertext (`{v:"1", iv, ct}`) in the private
+  SharedPreferences file `walletchan_biometric`, written with `commit()` before
+  `ok:true` is sent. Not backed up (`allowBackup=false`,
+  `fullBackupContent=false`, `data_extraction_rules.xml` excludes every domain).
+- Invalidation: `KeyPermanentlyInvalidatedException` (a fingerprint/face was
+  added, or all were removed), a missing key, or a decrypt failure after a
+  successful prompt → key and stored data are deleted and unlock replies
+  `invalidated`. Other Keystore errors before the prompt reply `failed` and keep
+  the enrollment.
+- The requesting document must still be there: a new shell `hello`, a main-frame
+  page start (reload) or WebView recreation cancels any prompt and drops its
+  reply, so the secret is never delivered to a different document. The shell
+  should therefore send `hello` once per document.
+- The secret is never logged; byte arrays holding it are zeroed after use (the
+  JSON strings carrying it can't be).
 
 ## Background keep-alive (WalletConnect)
 

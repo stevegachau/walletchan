@@ -21,6 +21,7 @@ class ShellBridge(
     private val http: HttpBridge,
     private val appVersion: String,
     private val appVersionCode: Long,
+    private val biometrics: BiometricUnlock,
     private val session: SessionStore = ProcessSessionStore,
 ) : WebViewCompat.WebMessageListener {
 
@@ -52,6 +53,8 @@ class ShellBridge(
     /** Forget the shell channel (main WebView reloaded / recreated). */
     fun reset() {
         shellProxy = null
+        // A biometric result belongs to the document that asked; never hand it to a new one.
+        biometrics.abandon()
     }
 
     /** Sends a message to the shell top frame. Returns false if the shell hasn't said hello yet. */
@@ -90,6 +93,8 @@ class ShellBridge(
                     return
                 }
                 shellProxy = replyProxy
+                // A (re)booted shell document: any prompt for the previous one is moot.
+                biometrics.abandon()
                 post(
                     replyProxy,
                     JSONObject()
@@ -114,6 +119,14 @@ class ShellBridge(
                 if (result != SessionStore.Result.OK) {
                     Log.w(AppConfig.LOG_TAG, "sessionStore '${msg.optString("op")}' rejected: $result")
                 }
+            }
+            in BiometricUnlock.COMMANDS -> {
+                if (!isMainFrame) {
+                    Log.w(AppConfig.LOG_TAG, "$cmd from a sub-frame ignored")
+                    return
+                }
+                // Replies (an unlock carries the password) go only to the asking frame. Never logged.
+                biometrics.handle(cmd, msg) { reply -> post(replyProxy, reply.toString()) }
             }
             "wcSessions" -> host.wcSessions(msg.optInt("count", 0).coerceIn(0, MAX_WC_SESSIONS))
             "requestAttention" -> host.requestAttention(

@@ -104,6 +104,8 @@ dependencies {
     implementation("androidx.core:core-ktx:1.16.0")
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("androidx.webkit:webkit:1.14.0")
+    // Biometric unlock (BiometricPrompt + Class 3 CryptoObject). 1.1.0 is the latest stable.
+    implementation("androidx.biometric:biometric:1.1.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     // Embedded ZXing scanner (no Google Play Services dependency).
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")

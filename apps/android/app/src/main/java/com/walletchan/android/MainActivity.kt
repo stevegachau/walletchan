@@ -39,6 +39,7 @@ import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanIntentResult
 import com.journeyapps.barcodescanner.ScanOptions
 import org.json.JSONObject
+import java.util.concurrent.Executors
 
 /**
  * Hosts the wallet (main WebView running the extension via the JS shell) and the
@@ -56,6 +57,8 @@ class MainActivity : AppCompatActivity(), ShellBridge.Host, DappBrowser.Host, Fi
     private lateinit var notifier: Notifier
     private lateinit var keepAlive: WalletConnectKeepAlive
     private lateinit var attention: AttentionRequester
+    private lateinit var biometrics: BiometricUnlock
+    private val biometricWorker = Executors.newSingleThreadExecutor()
     private var errorShown = false
     private var resumed = false
 
@@ -132,12 +135,22 @@ class MainActivity : AppCompatActivity(), ShellBridge.Host, DappBrowser.Host, Fi
         keepAlive = WalletConnectKeepAlive(this)
         attention = AttentionRequester(notifier) { resumed }
         http = HttpBridge(safeDefaultUserAgent())
+        // The prompter owns the activity's single BiometricPrompt, which must be created in onCreate.
+        biometrics = BiometricUnlock(
+            keys = KeystoreBiometricKeys(this),
+            store = SharedPrefsBiometricStore(this),
+            prompter = AndroidBiometricPrompter(this),
+            worker = biometricWorker,
+            main = ContextCompat.getMainExecutor(this),
+            log = { Log.w(AppConfig.LOG_TAG, it) },
+        )
         val packageInfo = packageManager.getPackageInfo(packageName, 0)
         shellBridge = ShellBridge(
             host = this,
             http = http,
             appVersion = packageInfo.versionName ?: "",
             appVersionCode = PackageInfoCompat.getLongVersionCode(packageInfo),
+            biometrics = biometrics,
         )
         dapp = DappBrowser(this, findViewById(R.id.dapp_root), this, this)
 
@@ -183,7 +196,10 @@ class MainActivity : AppCompatActivity(), ShellBridge.Host, DappBrowser.Host, Fi
             mainWebView?.let { walletContainer.removeView(it); it.destroy() }
             mainWebView = null
             http.shutdown()
+            biometrics.abandon()
         }
+        // Queued Keystore/storage work (e.g. a disable) still completes.
+        biometricWorker.shutdown()
         super.onDestroy()
     }
 
@@ -240,6 +256,8 @@ class MainActivity : AppCompatActivity(), ShellBridge.Host, DappBrowser.Host, Fi
         }
 
         override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
+            // The shell document that asked for a biometric prompt is being replaced.
+            if (view === mainWebView) biometrics.abandon()
             if (url == null || url == "about:blank" || UrlUtils.isAppOrigin(url)) return
             // Navigations that bypassed shouldOverrideUrlLoading (e.g. form POSTs).
             Log.w(AppConfig.LOG_TAG, "Main WebView left the app origin ($url); restoring shell")
