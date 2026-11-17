@@ -236,6 +236,49 @@ async function suiteCreate(browser, server) {
     console.log(`    timing: lock -> unlocked by fingerprint in ${Date.now() - lockedAt} ms`);
     pass("create: locked wallet unlocks with one fingerprint touch (auto prompt)");
 
+    // Repeated cycles must keep working (a missed Unlock press used to be
+    // misread as a wrong password and switched the feature off).
+    for (let cycle = 0; cycle < 3; cycle++) {
+      const mark = w.native.commands.length;
+      await uiBio.getByRole("button", { name: "Lock wallet" }).click();
+      await w.native.waitFor((c) => c.cmd === "biometricUnlock" && w.native.commands.indexOf(c) >= mark, 15_000, "biometric prompt");
+      await waitForHome(uiBio, 30_000);
+      await bioField.waitFor({ state: "hidden", timeout: 15_000 });
+      await w.shell.waitForTimeout(700);
+      const prompts = w.native.commands.slice(mark).filter((c) => c.cmd === "biometricUnlock").length;
+      assert(prompts === 1, `exactly one fingerprint prompt per unlock (got ${prompts})`);
+    }
+    // Once more on a CPU slowed 10x (a slower phone, where the form takes a
+    // while to register the filled-in password).
+    const cdp = await w.context.newCDPSession(w.shell);
+    await cdp.send("Emulation.setCPUThrottlingRate", { rate: 10 });
+    try {
+      const mark = w.native.commands.length;
+      await uiBio.getByRole("button", { name: "Lock wallet" }).click();
+      await w.native.waitFor((c) => c.cmd === "biometricUnlock" && w.native.commands.indexOf(c) >= mark, 30_000, "biometric prompt (slow CPU)");
+      await waitForHome(uiBio, 60_000);
+      await bioField.waitFor({ state: "hidden", timeout: 30_000 });
+    } finally {
+      await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
+    }
+    await w.shell.waitForTimeout(500);
+    assert(w.native.bio.stored === PASSWORD, "still enrolled after repeated fingerprint unlocks");
+    assert(!w.native.commands.some((c) => c.cmd === "biometricDisable"), "never disabled itself");
+    pass("create: fingerprint unlock keeps working across repeated lock/unlock cycles");
+
+    // A genuinely stale saved password (changed elsewhere): the wallet says
+    // "Incorrect password", so fingerprint unlock turns itself off and says why.
+    w.native.bio.stored = "an-old-password-1";
+    const staleMark = w.native.commands.length;
+    await uiBio.getByRole("button", { name: "Lock wallet" }).click();
+    await w.native.waitFor((c) => c.cmd === "biometricDisable" && w.native.commands.indexOf(c) >= staleMark, 30_000, "disable after wrong password");
+    await w.shell.waitForFunction(() => /password changed/i.test(document.getElementById("wc-toast").textContent), null, { timeout: 10_000 });
+    await screenshot(w.shell, "create-09-fingerprint-stale-password");
+    pass("create: a stale saved password turns fingerprint unlock off with a clear message");
+    await bioField.fill(PASSWORD);
+    await uiBio.getByRole("button", { name: "Unlock", exact: true }).click();
+    await waitForHome(uiBio);
+
     const errors = relevantErrors(w.consoleErrors);
     if (errors.length) console.log("    console errors:\n      " + errors.slice(0, 20).join("\n      "));
     return w;

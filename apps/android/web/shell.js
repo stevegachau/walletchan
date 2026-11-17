@@ -2008,7 +2008,10 @@
         // instead of on the next 20 s keepalive tick.
         nudgeRelay();
         appVisible = true;
-        bioAutoPrompted = false; // a prompt cancelled by leaving the app may show again
+        // A prompt cancelled by leaving the app may show again — but the system
+        // biometric dialog itself pauses/resumes the activity on many phones;
+        // never re-prompt while a fingerprint unlock is still in progress.
+        if (!bio.prompting && Date.now() - bioFilledAt > 15_000) bioAutoPrompted = false;
         break;
       case "appPaused":
         appVisible = false;
@@ -2211,17 +2214,72 @@
     form.doc.addEventListener("submit", capture, true);
   }
 
-  function fillAndSubmit(form, secret) {
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  function setInputValue(form, secret) {
     const win = form.frame.contentWindow;
     const setter = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value").set;
     setter.call(form.input, secret);
     form.input.dispatchEvent(new win.Event("input", { bubbles: true }));
-    bioFilledAt = Date.now();
-    // Let React apply the value (enables the button), then press Unlock.
-    setTimeout(() => {
-      const fresh = findUnlockForm();
-      if (fresh && fresh.button) fresh.button.click();
-    }, 30);
+  }
+
+  /** The unlock form's own "wrong password" message is showing. */
+  function unlockFormSaysWrongPassword(doc) {
+    const error = doc.getElementById("unlock-password-error");
+    if (!error || !isVisible(error) || error.getAttribute("role") !== "alert") return false;
+    return /incorrect|wrong|invalid/i.test(error.textContent || "");
+  }
+
+  /**
+   * Fill the wallet's unlock form and press Unlock — reliably. On a phone the
+   * form may take a while to register the value (the button stays disabled
+   * until it does), so wait for an enabled button, and retry if the press
+   * didn't start an unlock. Resolves "unlocked" | "wrongPassword" | "unknown".
+   */
+  async function fillAndSubmit(secret) {
+    let submittedAt = 0;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      let form = findUnlockForm();
+      if (!form) return "unlocked";
+      if (form.input.value !== secret) setInputValue(form, secret);
+      bioFilledAt = Date.now();
+      // Wait (≤ 3 s) for the Unlock button to become enabled.
+      for (let waited = 0; waited < 3000; waited += 25) {
+        form = findUnlockForm();
+        if (!form) return "unlocked";
+        if (form.button && !form.button.disabled && form.input.value === secret) break;
+        await sleep(25);
+      }
+      if (!form.button || form.button.disabled) continue;
+      // An "Incorrect password" left over from an earlier typed attempt must
+      // not be blamed on the saved password: require it to clear first.
+      let errorCleared = !unlockFormSaysWrongPassword(form.doc);
+      const saysWrong = (doc) => {
+        const wrong = unlockFormSaysWrongPassword(doc);
+        if (!wrong) errorCleared = true;
+        return wrong && errorCleared;
+      };
+      form.button.click();
+      submittedAt = Date.now();
+      // The press "took" when the form starts unlocking (button disabled /
+      // "Unlocking…"), goes away, or reports an error.
+      for (let waited = 0; waited < 1500; waited += 50) {
+        await sleep(50);
+        const now = findUnlockForm();
+        if (!now) return "unlocked";
+        if (saysWrong(now.doc)) return "wrongPassword";
+        if (!now.button || now.button.disabled) break;
+      }
+      // Unlocking (PBKDF2 can take seconds on a phone): wait for the outcome.
+      for (let waited = 0; waited < 60_000; waited += 200) {
+        const now = findUnlockForm();
+        if (!now) return "unlocked";
+        if (saysWrong(now.doc)) return "wrongPassword";
+        if (now.button && !now.button.disabled && Date.now() - submittedAt > 1500) break; // idle again: retry
+        await sleep(200);
+      }
+    }
+    return "unknown";
   }
 
   async function bioUnlock() {
@@ -2230,23 +2288,18 @@
     try {
       const reply = await bioRequest("biometricUnlock");
       if (reply.ok && typeof reply.secret === "string") {
-        const form = findUnlockForm();
-        if (!form) return;
-        const doc = form.doc;
-        fillAndSubmit(form, reply.secret);
-        // If the saved password stopped working (changed, wallet reset), turn
-        // the feature off instead of failing silently every time.
-        setTimeout(async () => {
-          const still = findUnlockForm();
-          if (!still || still.doc !== doc) return;
-          if (still.button && still.button.disabled) return; // still unlocking
-          const unlocked = await sendAsWalletUi({ type: "isWalletUnlocked" }).catch(() => false);
-          if (unlocked === true) return;
+        if (!findUnlockForm()) return;
+        const outcome = await fillAndSubmit(reply.secret);
+        if (outcome === "wrongPassword") {
+          // Only on the wallet's own "incorrect password" answer: the saved
+          // password is stale (changed / wallet reset). Never on a guess.
           await bioRequest("biometricDisable");
           bio.enrolled = false;
           bio.wantSetup = true;
-          showToast("Saved password didn't work. Unlock with your password to set up fingerprint unlock again.", "error", 7000);
-        }, 10_000);
+          showToast("Your password changed. Unlock with your password once to update fingerprint unlock.", "error", 7000);
+        } else if (outcome === "unknown") {
+          showToast("Fingerprint unlock didn't finish. Tap “Unlock with fingerprint” to try again.", "info", 5000);
+        }
       } else if (reply.error === "invalidated" || reply.error === "not_enrolled") {
         bio.enrolled = false;
         if (reply.error === "invalidated") {

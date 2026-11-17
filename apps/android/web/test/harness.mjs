@@ -266,9 +266,18 @@ export async function createWalletContext(browser, { origin = "localhost", serve
         reply = { ok: true };
       }
       native.record({ cmd: cmd.cmd, id: cmd.id }); // never record the secret
-      source.frame
-        .evaluate((json) => window.__wcNativeDeliver(json), JSON.stringify(Object.assign({ type: cmd.cmd, id: cmd.id }, reply)))
-        .catch(() => {});
+      const deliver = (message) =>
+        source.frame.evaluate((json) => window.__wcNativeDeliver(json), JSON.stringify(message)).catch(() => {});
+      if (cmd.cmd === "biometricUnlock") {
+        // Like many phones: the system biometric dialog pauses and resumes
+        // the activity around the prompt.
+        await deliver({ type: "appPaused" });
+        await new Promise((r) => setTimeout(r, 150));
+        await deliver(Object.assign({ type: cmd.cmd, id: cmd.id }, reply));
+        await deliver({ type: "appResumed" });
+        return;
+      }
+      await deliver(Object.assign({ type: cmd.cmd, id: cmd.id }, reply));
       return;
     }
     if (cmd.cmd === "sessionStore" && source.frame === source.page.mainFrame()) {
