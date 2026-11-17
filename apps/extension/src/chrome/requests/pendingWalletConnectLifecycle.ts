@@ -76,7 +76,9 @@ function expectedRouteKind(
   if (kind === "transaction") return "transaction";
   if (kind === "signature") return "signature";
   if (kind === "erc7715Permission") return "erc7715Permission";
-  // wallet_sendCalls is acknowledged immediately and has no deferred route.
+  // wallet_sendCalls now keeps a deferred "batch" route until the user
+  // decides, but cross-dapp entries and prompts queued before that change
+  // have none, so batches stay bound by their explicit topic metadata.
   return null;
 }
 

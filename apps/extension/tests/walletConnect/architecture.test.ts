@@ -96,3 +96,33 @@ test("background composes WalletConnect client and commands without a root shim"
     /from ["']\.\.\/\.\.\/walletConnect[A-Z][^"']*["']/,
   );
 });
+
+test("deferred wallet_sendCalls mapping and session capabilities stay effect-free", async () => {
+  const [batchResponse, sessionCapabilities, bridge, mapping] = await Promise.all([
+    readWalletConnectModule("batchResponse.ts"),
+    readWalletConnectModule("sessionCapabilities.ts"),
+    readWalletConnectModule("resultBridge.ts"),
+    readWalletConnectModule("resultMapping.ts"),
+  ]);
+  // The answer mapping is pure: only a type import from storage.
+  assert.deepEqual(
+    [...batchResponse.matchAll(/from ["']([^"']+)["']/g)].map((match) => match[1]),
+    ["../provider/limits", "./storage"],
+  );
+  assert.match(batchResponse, /import type \{[^}]*\} from ["'].\/storage["']/);
+  assert.doesNotMatch(batchResponse, /chrome\.|fetch\(|@reown|@walletconnect/);
+  // Capability advertisement reuses the wallet_getCapabilities facade only.
+  assert.match(sessionCapabilities, /from ["']\.\.\/batchTxHandlers["']/);
+  assert.doesNotMatch(
+    sessionCapabilities,
+    /chrome\.storage|from ["'].\/(?:client|storage|protocol)["']|@reown|@walletconnect/,
+  );
+  // Key-to-answer mapping is pure; only the bridge performs storage/SDK effects.
+  assert.match(bridge, /from ["'].\/resultMapping["']/);
+  assert.deepEqual(
+    [...mapping.matchAll(/from ["']([^"']+)["']/g)].map((match) => match[1]),
+    ["./storage", "./batchResponse"],
+  );
+  assert.match(mapping, /import type \{[^}]*\} from ["'].\/storage["']/);
+  assert.doesNotMatch(mapping, /chrome\.|@reown|@walletconnect/);
+});

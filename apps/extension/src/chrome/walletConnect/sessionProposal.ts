@@ -7,6 +7,7 @@ import type { Account } from "../types";
 import { WALLETCONNECT_SUPPORTED_EVENTS } from "./sessionPolicy";
 import { getWalletConnectMethodsForAccount, isSessionAccount } from "./sessionAccountPolicy";
 import { getSafeAccountRecord } from "../safe/accountRepository";
+import { buildWalletConnectScopedProperties } from "./sessionCapabilities";
 import { requireSafeFeature } from "../safe/featurePolicy";
 import {
   buildProposalRejection,
@@ -64,7 +65,17 @@ export async function approveWalletConnectProposalForAccount(
       );
     }
 
-    await kit.approveSession({ id: proposal.id, namespaces });
+    // Advertise the same atomic capability wallet_getCapabilities returns;
+    // best effort, so a failed or slow probe only omits it.
+    const scopedProperties = await buildWalletConnectScopedProperties(
+      account,
+      namespaces,
+    );
+    await kit.approveSession({
+      id: proposal.id,
+      namespaces,
+      ...(scopedProperties ? { scopedProperties } : {}),
+    });
     void onSessionsChanged();
     return { success: true };
   } catch (error) {

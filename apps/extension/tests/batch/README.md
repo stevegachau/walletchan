@@ -8,4 +8,10 @@ are colocated here as well. Broader shared
 transport/lifecycle tests remain at `tests/` until their owning production
 domains move.
 
+`decisionResultPublication.test.ts` freezes which executors publish
+`batchTxResult` decisions with same-chain `chainId`/`transactionHashes` (local
+single/atomic/sequential and Bankr), that force-inclusion L1 deposits never do,
+and that rejection/terminalization writes carry explicit codes; these records
+answer deferred WalletConnect `wallet_sendCalls` requests.
+
 The security runner discovers this directory recursively.

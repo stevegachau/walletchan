@@ -23,7 +23,10 @@ export async function finalizeCrossDappFeePaymentReceipt(input: {
   route: CrossDappBatchResultRoute;
   verified: VerifiedUserOperationReceipt;
 }): Promise<void> {
-  const fanOut = createCrossDappBatchFanOutFromRoute(input.route);
+  const fanOut = createCrossDappBatchFanOutFromRoute(
+    input.route,
+    input.chainId,
+  );
   await applyReceiptToHistory(
     input.historyId,
     input.verified.txHash,
@@ -108,7 +111,10 @@ export async function failConsumedCrossDappBatch(input: {
   route: CrossDappBatchResultRoute;
   error: string;
 }): Promise<void> {
-  const fanOut = createCrossDappBatchFanOutFromRoute(input.route);
+  const fanOut = createCrossDappBatchFanOutFromRoute(
+    input.route,
+    input.batch.chainId,
+  );
   await updateTxInHistory(input.historyId, {
     status: "failed",
     error: input.error,

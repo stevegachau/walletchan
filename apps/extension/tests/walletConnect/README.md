@@ -18,6 +18,16 @@ This directory freezes the remote-session boundary:
 - `proposalAccess.test.ts` drives the real background message pipeline to
   prove pages, subframes, ENS documents, and other extensions cannot list,
   approve, or reject proposals.
+- `batchDeferredResponse.test.ts` drives the real request router, batch
+  intake, and result bridge (WalletKit replaced by a fake) to prove
+  `wallet_sendCalls` sends no early reply, answers `{ id }` with CAIP-345 hashes
+  only after approval, 4001 on reject (including cross-dapp removal), 4100 on
+  authorization invalidation, nothing on session termination, replays from the
+  outbox after a relay failure, and keeps Safe owner-approval answers.
+- `sessionCapabilities.test.ts` proves session approval `scopedProperties`
+  carry exactly the standard `atomic` status of the `wallet_getCapabilities`
+  answer for approved chains (no legacy keys) and that
+  a failing, slow, or empty probe omits them without failing the approval.
 - `csp.test.ts` proves WalletConnect Pay remains fail-closed and that the
   background bundle uses the extension-owned CSP-safe shim.
 

@@ -139,6 +139,8 @@ export async function processSingleLocalBatch(
     await writeResultToStorage(`batchTxResult:${bundleId}`, {
       success: true,
       txHash: result.txHash,
+      chainId,
+      transactionHashes: [result.txHash],
     });
   } catch (error) {
     resetNonce(fromAddress, chainId);

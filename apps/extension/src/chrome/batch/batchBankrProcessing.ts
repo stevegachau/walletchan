@@ -169,6 +169,8 @@ export async function processBatchTransactionInBackground(
       await writeResultToStorage(`batchTxResult:${bundleId}`, {
         success: true,
         txHash,
+        chainId: pending.chainId,
+        transactionHashes: txHash ? [txHash] : [],
       });
     } else {
       await updateBundleStatus(bundleId, { status: BUNDLE_STATUS.PENDING, txHash });
@@ -177,6 +179,8 @@ export async function processBatchTransactionInBackground(
       await writeResultToStorage(`batchTxResult:${bundleId}`, {
         success: true,
         txHash,
+        chainId: pending.chainId,
+        transactionHashes: txHash ? [txHash] : [],
       });
     }
   } catch (error) {

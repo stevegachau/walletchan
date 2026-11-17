@@ -235,6 +235,13 @@ export async function processUsdcBatchInBackground(input: {
     });
     if (!submission.outcomeUnknown) effectGuard.settleEffect();
     await updateBundleStatus(bundleId, { status: BUNDLE_STATUS.PENDING, atomic: true });
+    // The bundler accepted the user operation: answer a deferred
+    // WalletConnect wallet_sendCalls now. The onchain hash is only known
+    // after bundling, so no CAIP-345 hashes are published here.
+    await writeResultToStorage(`batchTxResult:${bundleId}`, {
+      success: true,
+      userOperationSubmitted: true,
+    });
     await updateTxInHistory(bundleId, {
       status: "pending",
       userOperationHash: submission.userOperationHash,

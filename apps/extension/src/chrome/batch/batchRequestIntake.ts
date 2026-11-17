@@ -294,7 +294,13 @@ export async function handleWalletSendCalls(
       return;
     }
 
-    await writeResultToStorage(`batchTxAck:${bundleId}`, { success: true, id: bundleId });
+    // Queue acknowledgement only: the injected provider returns the id now,
+    // while WalletConnect keeps its route open until batchTxResult.
+    await writeResultToStorage(`batchTxAck:${bundleId}`, {
+      success: true,
+      id: bundleId,
+      awaitingUserDecision: true,
+    });
     clearProviderRequestSurfaceHint(senderWindowId);
     chrome.runtime.sendMessage({
       type: "newPendingBatchTxRequest",

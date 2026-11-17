@@ -96,6 +96,11 @@ async function terminalizeSourceGroups(
         error,
         completedAt: Date.now(),
       });
+      await writeResultToStorage(`batchTxResult:${entry.source.bundleId}`, {
+        success: false,
+        error,
+        code,
+      });
     } else {
       transactions += 1;
       await writeResultToStorage(`txResult:${entry.txId}`, {

@@ -97,6 +97,13 @@ export async function terminalizeUnauthorizedPendingRequest(
       error: failure.error,
       completedAt: Date.now(),
     });
+    // WalletConnect wallet_sendCalls is answered only on a decision, so an
+    // invalidated batch must close its deferred route as well.
+    await writeBridgedProviderResult(
+      `batchTxResult:${pending.id}`,
+      { success: false, error: failure.error, code: failure.code },
+      pending,
+    );
     return;
   }
 

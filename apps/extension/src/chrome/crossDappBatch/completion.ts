@@ -34,11 +34,32 @@ export function createCrossDappBatchFanOut(
 ): CrossDappBatchFanOut {
   return createCrossDappBatchFanOutFromRoute(
     createCrossDappBatchResultRoute(batch),
+    batch.chainId,
   );
+}
+
+/**
+ * Source wallet_sendCalls decision for a deferred WalletConnect route. The
+ * first write wins in the WalletConnect outbox; injected sources already hold
+ * their bundle id and ignore this transient key.
+ */
+function walletSendCallsDecision(
+  outcome: WalletSendCallsFanOutOutcome,
+  chainId?: number,
+): Record<string, unknown> {
+  if (outcome.kind === "submitted" || outcome.kind === "confirmed") {
+    return {
+      success: true,
+      txHash: outcome.txHash,
+      ...(chainId ? { chainId, transactionHashes: [outcome.txHash] } : {}),
+    };
+  }
+  return { success: false, error: outcome.error };
 }
 
 export function createCrossDappBatchFanOutFromRoute(
   route: CrossDappBatchResultRoute,
+  chainId?: number,
 ): CrossDappBatchFanOut {
   return {
     walletSendCalls: async (outcome) => {
@@ -73,6 +94,10 @@ export function createCrossDappBatchFanOutFromRoute(
               completedAt: Date.now(),
             });
           }
+          await writeResultToStorage(
+            `batchTxResult:${bundleId}`,
+            walletSendCallsDecision(outcome, chainId),
+          );
         }),
       );
     },

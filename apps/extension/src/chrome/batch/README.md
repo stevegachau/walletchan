@@ -44,6 +44,12 @@ revalidate origin or WalletConnect authority as the final await, then begin the
 RPC effect. Atomic EIP-7702 authorization is created only after delegate and
 nonce policy, and the exact reviewed calls remain pinned through publication.
 
+Every user decision publishes `batchTxResult:{bundleId}` exactly as the
+deferred WalletConnect `wallet_sendCalls` route expects: success writers that
+broadcast on the bundle's own chain add `chainId` and `transactionHashes`
+(CAIP-345), rejection carries `code: 4001`, and the intake success ack is only
+a queue acknowledgement (`awaitingUserDecision: true`).
+
 Sequential execution assigns nonces and history first, then broadcasts one leg
 at a time. A definite or ambiguous outcome stops the unsent tail. Completion
 tracking owns only the later aggregate bundle status and notification; it never

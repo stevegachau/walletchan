@@ -580,15 +580,18 @@ apps/extension/src/
 │   │   ├── sessionCommands.ts # Trusted-UI list/pair/disconnect/chain commands
 │   │   ├── proposalIntake.ts # Proposal intake: record + surface, never auto-approves
 │   │   ├── sessionProposal.ts # Namespace approval policy after explicit Connect
+│   │   ├── sessionCapabilities.ts # Best-effort ERC-5792 scopedProperties at approval
 │   │   ├── proposalStorage.ts # Bounded walletConnectPendingProposals review queue
 │   │   ├── proposalDecisions.ts # Trusted-UI Connect/Reject decisions (injected SDK deps)
 │   │   ├── requestRouter.ts # Claimed, validated session-request dispatch
 │   │   ├── pendingRequests.ts # Pinned tx/signature confirmation prompts
 │   │   ├── batchRequests.ts # ERC-5792 request adapters
+│   │   ├── batchResponse.ts # Deferred wallet_sendCalls answer (id, CAIP-345, 4001)
 │   │   ├── rpcRequests.ts   # Chain mutation and bounded safe-RPC adapters
 │   │   ├── storage.ts       # Durable request claims/routes/terminal outbox
 │   │   ├── protocol.ts      # Persist-before-relay JSON-RPC responses
 │   │   ├── resultBridge.ts  # Injected-result to relay delivery bridge
+│   │   ├── resultMapping.ts # Pure result-key → JSON-RPC answer mapping
 │   │   ├── keepalive.ts     # Active-session relay liveness
 │   │   └── reset.ts         # SDK teardown and replacement namespace rotation
 │   ├── portfolio/           # Portfolio display-state audit domain (see README.md)

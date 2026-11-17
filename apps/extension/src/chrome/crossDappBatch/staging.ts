@@ -44,6 +44,11 @@ export async function handleRemoveFromCrossDappBatch(
         error: "Removed from cross-dapp batch by user",
         completedAt: Date.now(),
       });
+      await writeResultToStorage(`batchTxResult:${bundleId}`, {
+        success: false,
+        error: "Removed from cross-dapp batch by user",
+        code: 4001,
+      });
     } else if (candidate.source?.kind !== "walletGenerated") {
       await writeResultToStorage(`txResult:${candidate.txId}`, {
         success: false,
@@ -74,7 +79,13 @@ export async function handleRejectCrossDappBatch(): Promise<{
           status: BUNDLE_STATUS.OFFCHAIN_FAILURE,
           error: "Cross-dapp batch rejected by user",
           completedAt: Date.now(),
-        });
+        }).then(() =>
+          writeResultToStorage(`batchTxResult:${bundleId}`, {
+            success: false,
+            error: "Cross-dapp batch rejected by user",
+            code: 4001,
+          }),
+        );
       }
       if (entry.source?.kind === "walletGenerated") return Promise.resolve();
       return writeResultToStorage(`txResult:${entry.txId}`, {

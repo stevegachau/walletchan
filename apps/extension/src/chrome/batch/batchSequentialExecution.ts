@@ -297,6 +297,8 @@ export async function processSequentialLocalBatch(
     await writeResultToStorage(`batchTxResult:${bundleId}`, {
       success: true,
       txHash: primaryTxHash,
+      chainId,
+      transactionHashes: txHashes,
     });
 
     // If some failed but others succeeded, show partial notification

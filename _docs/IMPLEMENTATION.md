@@ -2271,15 +2271,18 @@ src/
 │   │   ├── sessionCommands.ts # Trusted-UI list/pair/disconnect/chain commands
 │   │   ├── proposalIntake.ts # Proposal intake: record + surface, never approves
 │   │   ├── sessionProposal.ts # Approval namespace policy (after explicit Connect)
+│   │   ├── sessionCapabilities.ts # Best-effort ERC-5792 scopedProperties at approval
 │   │   ├── proposalStorage.ts # Bounded walletConnectPendingProposals review queue
 │   │   ├── proposalDecisions.ts # Trusted-UI Connect/Reject (injected SDK deps)
 │   │   ├── requestRouter.ts # Claimed, validated session-request dispatch
 │   │   ├── pendingRequests.ts # Pinned tx/signature confirmation prompts
 │   │   ├── batchRequests.ts # ERC-5792 request adapters
+│   │   ├── batchResponse.ts # Deferred wallet_sendCalls answer (id, CAIP-345, 4001)
 │   │   ├── rpcRequests.ts   # Chain mutation and bounded safe-RPC adapters
 │   │   ├── storage.ts       # Durable request claims/routes/terminal outbox
 │   │   ├── protocol.ts      # Persist-before-relay JSON-RPC responses
 │   │   ├── resultBridge.ts  # Injected-result to relay delivery bridge
+│   │   ├── resultMapping.ts # Pure result-key → JSON-RPC answer mapping
 │   │   ├── keepalive.ts     # Active-session relay liveness
 │   │   └── reset.ts         # SDK teardown and replacement namespace rotation
 │   ├── sponsoredTransfers/ # ERC-3009 sponsored-transfer audit domain (see README.md)
@@ -3053,6 +3056,18 @@ WalletConnect support is a parallel dapp transport for sites that do not list Wa
    requires `isSessionAccount`, removes the record first-action-wins, re-reads
    the proposal from the WalletKit store, and applies the unchanged
    Safe-eligibility + `buildApprovedNamespaces` policy before `approveSession`.
+   `walletConnect/sessionCapabilities.ts` then advertises ERC-5792 atomic
+   batching as WalletKit `scopedProperties` in WalletConnect's documented
+   CAIP-25 shape, `{ "eip155:<id>": { "atomic": { "status": "supported" | "ready" } } }`,
+   for approved chains only. The status is read from the same
+   `handleWalletGetCapabilities` answer `wallet_getCapabilities` returns, so the
+   two cannot disagree; chains without atomic support are omitted and no
+   non-standard/legacy key (such as `atomicBatch`) is advertised. The probe is
+   bounded to 3 seconds and best effort; a failure or timeout omits
+   `scopedProperties` and never blocks or fails the approval. Top-level
+   `sessionProperties.atomic` is not sent: WalletChan's support is per chain,
+   and WalletConnect's UniversalProvider also uses
+   `sessionProperties.capabilities` as its own response cache.
    Any failure rejects the proposal and broadcasts `walletConnectProposalRejected`.
    Reject sends `walletConnectRejectProposal { proposalId }` →
    `rejectSession` code 5000 "User rejected" and a
@@ -3062,10 +3077,10 @@ WalletConnect support is a parallel dapp transport for sites that do not list Wa
 
 **Background modules:**
 
-- `walletConnect/client.ts` owns WalletKit initialization, generation-bound SDK listeners, relay recovery, and reset cutover. `sessionCommands.ts` exposes the four UI-only list/pair/disconnect/switch operations; `resultBridge.ts` delivers final `txResult:*`, `sigResult:*`, and `erc7715PermissionResult:*` values without creating another signing path.
+- `walletConnect/client.ts` owns WalletKit initialization, generation-bound SDK listeners, relay recovery, and reset cutover. `sessionCommands.ts` exposes the four UI-only list/pair/disconnect/switch operations; `resultBridge.ts` delivers final `txResult:*`, `sigResult:*`, `erc7715PermissionResult:*`, and ERC-5792 `batchTxAck:*` (Safe owner approval or intake failure only) / `batchTxResult:*` (EOA decision) values without creating another signing path; it commits the terminal response to the outbox before acquiring WalletKit so a failed SDK init stays replayable.
 - `walletConnect/proposal.ts` normalizes and bounds proposal metadata and the requested chain/method summary. `proposalIntake.ts` records arriving proposals (never approving them); `sessionProposal.ts` holds `approveWalletConnectProposalForAccount`, the signing-account and visible-chain namespace policy that runs only after an explicit Connect. `proposalStorage.ts` owns the bounded (10 entries, ≤15 min) `walletConnectPendingProposals` queue with atomic first-wins removal; `proposalDecisions.ts` owns the trusted-UI `walletConnectGetPendingProposals` / `walletConnectApproveProposal` / `walletConnectRejectProposal` handlers, built by a factory that `sessionCommands.ts` binds to `ensureWalletKit` and the broadcasts (`walletConnectProposalCommands`). The router wraps decisions in the `sessionProposal` pending-resolution claim, so reset and double clicks are mutually exclusive with a decision. Proposals with no approvable namespace are rejected and a sanitized `walletConnectProposalRejected` summary is broadcast for the UI. The SDK `proposal_expire` event and WalletConnect reset clear pending records.
 - `walletConnect/requestRouter.ts` claims and validates every `session_request` before dispatch. `pendingRequests.ts` alone creates pinned transaction/signature confirmation records, keeping account binding and popup effects out of the method router. Duplicate in-flight requests receive `-32002`; stored terminal results replay exactly.
-- `walletConnect/batchRequests.ts` adapts ERC-5792 methods to `batchTxHandlers.ts`; `rpcRequests.ts` owns chain mutation and allowlisted bounded read-only RPC forwarding.
+- `walletConnect/batchRequests.ts` adapts ERC-5792 methods to `batchTxHandlers.ts` and opens the deferred `batch` route for every `wallet_sendCalls`; `batchResponse.ts` is the pure mapping from batch ack/decision records to the JSON-RPC answer (`{ id, capabilities?.caip345 }` or an error, with `4001 "User rejected the request."`); `rpcRequests.ts` owns chain mutation and allowlisted bounded read-only RPC forwarding.
 - `walletConnect/protocol.ts` persists the first terminal JSON-RPC response before relay delivery. `outbox.ts` replays retained terminal responses and removes them only after successful delivery or confirmed session absence. `sessionPolicy.ts` owns CAIP/account/method rules and sanitized bounded peer metadata.
 - `walletConnect/chainState.ts` maintains the WalletConnect-specific `walletConnectChainId`, separate from injected per-tab state, and emits supported `chainChanged` events.
 - `walletConnect/keepalive.ts` sends the active-session relay fetch pulse while at least one session exists; it has no credential or wallet-secret dependency.
@@ -3082,7 +3097,7 @@ WalletConnect support is a parallel dapp transport for sites that do not list Wa
 **Supported request behavior:**
 
 - `eth_sendTransaction` uses the same confirmation screens and Bankr/PK/Seed signing paths as injected dapp transactions.
-- ERC-5792 batching is supported over WalletConnect through `wallet_getCapabilities`, `wallet_sendCalls`, `wallet_getCallsStatus`, and `wallet_showCallsStatus`. `wallet_sendCalls` responds with the bundle id only after the pending request and status are durably queued and the live session is revalidated; the response is persisted before relay delivery so a delivery retry returns the same bundle id without enqueueing a second batch. The dapp polls `wallet_getCallsStatus` just like the injected-provider route. Each inner call's native `value` is normalized through `transactionValidation.ts` before the batch is stored; malformed values return a `batchTxAck` error and older malformed pending batches are blocked in the confirmation UI.
+- ERC-5792 batching is supported over WalletConnect through `wallet_getCapabilities`, `wallet_sendCalls`, `wallet_getCallsStatus`, and `wallet_showCallsStatus`. `wallet_sendCalls` owns a durable `batch` route in `walletConnectPendingRequests` (like `eth_sendTransaction`) and is answered only after the user's decision: the intake `batchTxAck` is a queue acknowledgement (`awaitingUserDecision: true`) that the result bridge ignores, and the first `batchTxResult:{bundleId}` publication answers the route. Approval answers `{ id }` once the batch is accepted for execution (local single/atomic EIP-7702: after the signed broadcast; local sequential: after the legs are broadcast; Bankr: after Bankr's submission returns; fee-token batches: after the bundler accepts the user operation; split mode: when the user chooses split; cross-dapp: when the shared transaction is submitted). When the writer published same-chain hashes the reply adds WalletConnect's `capabilities.caip345 = { caip2: "eip155:<chainId>", transactionHashes }`; OP Stack force inclusion (L1 deposit hashes), split mode, and fee-token submission omit it. Reject answers JSON-RPC error `4001 "User rejected the request."`; authorization invalidation answers the existing `4100` error; execution failure before any broadcast answers `-32000` with the failure message; session termination drops the route. Safe batches keep answering `{ id }` only after explicit owner approval. Every terminal response is persisted before relay delivery so a delivery retry returns the same answer without enqueueing a second batch. The dapp then polls `wallet_getCallsStatus` with the same id exactly like the injected-provider route. The injected provider still returns the bundle id at intake (unchanged). Each inner call's native `value` is normalized through `transactionValidation.ts` before the batch is stored; malformed values return a `batchTxAck` error and older malformed pending batches are blocked in the confirmation UI.
 - `personal_sign`, `eth_signTypedData_v3`, and `eth_signTypedData_v4` use the same signature confirmation screens. EIP-712 validation/sanitization is shared with the injected-provider path.
 - `eth_sign` and deprecated `eth_signTypedData` v1 are rejected.
 - `eth_accounts`, `eth_requestAccounts`, `eth_chainId`, `net_version`, `wallet_switchEthereumChain`, and a small read-only RPC allowlist are answered directly in the background.
@@ -4218,7 +4233,10 @@ without changing any storage shape.
 `wallet_sendCalls` queue operation. It acknowledges the bundle id only after
 both the pending request and initial bundle status are durable and the pinned
 transport authorization is still current; failures remove either partial
-record before publishing the exact error acknowledgement.
+record before publishing the exact error acknowledgement. A successful ack is
+marked `awaitingUserDecision: true`: the injected provider returns the id from
+it, while a WalletConnect route waits for `batchTxResult:{bundleId}`
+(`walletConnect/batchResponse.ts` maps it to the deferred JSON-RPC answer).
 Atomic PK/seed execution is isolated in `batch/batchAtomic7702Execution.ts`:
 it performs delegate revalidation, optional guarded EIP-7702 authorization,
 the single signed ERC-7821 broadcast, and receipt/status publication while

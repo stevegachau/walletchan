@@ -302,6 +302,8 @@ export async function processAtomic7702LocalBatch(
     await writeResultToStorage(`batchTxResult:${bundleId}`, {
       success: true,
       txHash,
+      chainId,
+      transactionHashes: [txHash],
     });
   } catch (error) {
     resetNonce(fromAddr, chainId);

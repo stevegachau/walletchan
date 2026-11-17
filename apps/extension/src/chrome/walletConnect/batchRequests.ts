@@ -17,7 +17,11 @@ import {
   respondSessionRequest,
   type WalletKitLike,
 } from "./protocol";
-import { withWalletConnectPendingRoute } from "./storage";
+import {
+  getWalletConnectPendingRequest,
+  withWalletConnectPendingRoute,
+} from "./storage";
+import { walletSendCallsTerminalResponse } from "./batchResponse";
 
 export async function handleWalletConnectGetCapabilities(
   kit: WalletKitLike,
@@ -101,45 +105,54 @@ export async function handleWalletConnectSendCalls(
     },
   );
 
-  if (account.type === "safe") {
-    await withWalletConnectPendingRoute({
-      id: bundleId,
-      kind: "batch",
-      topic: args.topic,
-      requestId: args.id,
-      method: "wallet_sendCalls",
-      timestamp: Date.now(),
-    }, intake, remoteClaimId);
-    return;
-  }
+  // Every wallet_sendCalls owns a durable route so the JSON-RPC response is
+  // deferred until the user decides (EOA: batchTxResult; Safe: owner-approved
+  // batchTxAck), mirroring eth_sendTransaction/personal_sign.
+  await withWalletConnectPendingRoute({
+    id: bundleId,
+    kind: "batch",
+    topic: args.topic,
+    requestId: args.id,
+    method: "wallet_sendCalls",
+    timestamp: Date.now(),
+  }, intake, remoteClaimId);
 
-  await intake();
+  await settleWalletConnectBatchIntake(kit, args, bundleId, account.type === "safe");
+}
 
+/**
+ * Intake failures are answered through the routed result bridge as soon as
+ * their ack is written. This only covers a bridge that could not commit the
+ * failure, or an intake that wrote no ack at all; a queued EOA batch keeps its
+ * route open for the user's decision.
+ */
+async function settleWalletConnectBatchIntake(
+  kit: WalletKitLike,
+  args: any,
+  bundleId: string,
+  isSafe: boolean,
+): Promise<void> {
   const ackKey = `batchTxAck:${bundleId}`;
   const storedAck = await chrome.storage.local.get(ackKey);
-  const ack = storedAck[ackKey]?.result as {
-    success: boolean;
-    id?: string;
-    error?: string;
-    code?: number;
-  } | undefined;
-  await chrome.storage.local.remove(ackKey).catch(() => undefined);
+  const ack = storedAck[ackKey]?.result as Record<string, unknown> | undefined;
+  if (!ack && isSafe) return; // The Safe ack is written on owner approval.
+  if (!isSafe) await chrome.storage.local.remove(ackKey).catch(() => undefined);
 
-  if (!ack) {
-    throw new Error("Failed to persist batch acknowledgement");
+  const terminal = ack
+    ? walletSendCallsTerminalResponse("ack", bundleId, ack)
+    : {
+        kind: "error" as const,
+        code: -32000,
+        message: "Failed to persist batch acknowledgement",
+      };
+  if (!terminal) return;
+  const route = await getWalletConnectPendingRequest(bundleId);
+  if (!route || route.terminalResponse) return;
+  if (terminal.kind === "result") {
+    await respondSessionRequest(kit, args, terminal.value);
+  } else {
+    await rejectSessionRequest(kit, args, terminal.code, terminal.message);
   }
-
-  if (ack.success && ack.id) {
-    await respondSessionRequest(kit, args, { id: ack.id });
-    return;
-  }
-
-  await rejectSessionRequest(
-    kit,
-    args,
-    ack.code || -32000,
-    ack.error || "Failed to create batch request",
-  );
 }
 
 export async function handleWalletConnectGetCallsStatus(

@@ -46,6 +46,7 @@ export async function handleRejectBatchTransaction(
   await writeResultToStorage(`batchTxResult:${bundleId}`, {
     success: false,
     error: "Batch transaction rejected by user",
+    code: 4001,
   });
 
   return { success: true };

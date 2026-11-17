@@ -1,63 +1,45 @@
 /** Bridges durable injected-request results back to their WalletConnect route. */
 
-import { getWalletConnectPendingRequest } from "./storage";
+import {
+  getWalletConnectPendingRequest,
+  saveWalletConnectTerminalResponse,
+} from "./storage";
 import {
   rejectSessionRequest as rejectRoutedSessionRequest,
   respondSessionRequest as respondRoutedSessionRequest,
 } from "./protocol";
 import { ensureWalletKit } from "./client";
+import {
+  parseWalletConnectResultKey,
+  walletConnectTerminalResponseFor,
+} from "./resultMapping";
 
 export async function completeWalletConnectRequestIfNeeded(
   key: string,
   result: Record<string, unknown>,
 ): Promise<void> {
-  const txPrefix = "txResult:";
-  const sigPrefix = "sigResult:";
-  const erc7715Prefix = "erc7715PermissionResult:";
-  const batchPrefix = "batchTxAck:";
-  const id = key.startsWith(txPrefix)
-    ? key.slice(txPrefix.length)
-    : key.startsWith(sigPrefix)
-      ? key.slice(sigPrefix.length)
-      : key.startsWith(erc7715Prefix)
-        ? key.slice(erc7715Prefix.length)
-        : key.startsWith(batchPrefix)
-          ? key.slice(batchPrefix.length)
-        : null;
-  if (!id) return;
+  const parsed = parseWalletConnectResultKey(key);
+  if (!parsed) return;
 
-  const pending = await getWalletConnectPendingRequest(id);
+  const pending = await getWalletConnectPendingRequest(parsed.id);
   if (!pending) return;
+  const terminal = walletConnectTerminalResponseFor(parsed.family, pending, result);
+  if (!terminal) return;
 
   try {
+    // Commit the first terminal response before SDK acquisition so a failed
+    // WalletKit init still leaves a replayable outbox entry.
+    await saveWalletConnectTerminalResponse(
+      pending.topic,
+      pending.requestId,
+      terminal,
+    );
     const kit = await ensureWalletKit();
     const args = { topic: pending.topic, id: pending.requestId };
-    const payload =
-      pending.kind === "transaction"
-        ? result.txHash
-        : pending.kind === "signature"
-          ? result.signature
-          : result.result;
-    const validBatchResult = pending.kind === "batch" &&
-      typeof result.id === "string" && result.id === pending.id;
-    if (
-      result.success === true &&
-      (validBatchResult || typeof payload === "string" || Array.isArray(payload))
-    ) {
-      await respondRoutedSessionRequest(
-        kit,
-        args,
-        validBatchResult ? { id: result.id } : payload,
-      );
+    if (terminal.kind === "result") {
+      await respondRoutedSessionRequest(kit, args, terminal.value);
     } else {
-      const error =
-        typeof result.error === "string" ? result.error : "Request failed";
-      await rejectRoutedSessionRequest(
-        kit,
-        args,
-        /reject|cancel/i.test(error) ? 4001 : -32000,
-        error,
-      );
+      await rejectRoutedSessionRequest(kit, args, terminal.code, terminal.message);
     }
   } catch (error) {
     console.warn(
