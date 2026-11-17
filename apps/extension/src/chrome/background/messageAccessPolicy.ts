@@ -240,6 +240,7 @@ export const WALLET_UI_MESSAGE_TYPES = [
   "walletConnectPair",
   "walletConnectDisconnectSession",
   "walletConnectSwitchChain",
+  "walletConnectGetPendingProposals", "walletConnectApproveProposal", "walletConnectRejectProposal",
   // Injected-dapp permission management
   "getDappPermissions",
   "getDappConnectionContext",

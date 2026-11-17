@@ -10,6 +10,9 @@
 - `TransactionDetailRoute.tsx` owns the shared extension frame and lazy
   boundary for ordinary and Unshield transaction-detail screens; both receive
   App-owned back and follow-up callbacks.
+- `WalletConnectProposalRoute.tsx` owns the extension frame and lazy boundary
+  for the WalletConnect connection review; App supplies the selected proposal,
+  accounts, display-mode callbacks, and the finish/close decision.
 
 Screen adapters receive route state from `App.tsx`; they do not subscribe to
 wallet storage or own request/account routing.

@@ -11,7 +11,7 @@ const sourceUrl = new URL("../../src/", import.meta.url);
 const transitionalBudgets: Record<string, number> = {
   // Safe adds account-aware provider routing and fail-closed surface dispatch;
   // presentation remains extracted to app/SafeAppSurfaces.tsx.
-  "App.tsx": 3_640,
+  "App.tsx": 3_625,
   "components/AccountSettings.tsx": 1_170,
   "components/AddAccount.tsx": 813,
   "components/BatchCallsList.tsx": 839,

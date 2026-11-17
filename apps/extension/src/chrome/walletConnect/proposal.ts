@@ -152,15 +152,33 @@ function getProposalMetadata(params: any): {
   };
 }
 
+/** Bounded chain/method summary shown on the connection review screen. */
+export function getProposalNamespaceSummary(
+  params: WalletConnectProposalParams | undefined,
+): { requiredChainIds: number[]; optionalChainIds: number[]; methods: string[] } {
+  const requiredChainIds = collectChainIds([params?.requiredNamespaces]);
+  const required = new Set(requiredChainIds);
+  return {
+    requiredChainIds,
+    optionalChainIds: collectChainIds([params?.optionalNamespaces]).filter(
+      (chainId) => !required.has(chainId),
+    ),
+    methods: getProposalRequestedMethods(params),
+  };
+}
+
 function getProposalRequestedChainIds(
   params: WalletConnectProposalParams | undefined,
 ): number[] {
+  return collectChainIds([params?.requiredNamespaces, params?.optionalNamespaces]);
+}
+
+function collectChainIds(
+  namespaces: Array<Record<string, WalletConnectNamespace> | undefined>,
+): number[] {
   const chains = new Set<number>();
   const maxRequestedChains = 100;
-  for (const namespace of [
-    params?.requiredNamespaces,
-    params?.optionalNamespaces,
-  ]) {
+  for (const namespace of namespaces) {
     for (const [key, value] of Object.entries(namespace || {})) {
       const keyChainId = chainIdFromCaip2(key);
       if (keyChainId) chains.add(keyChainId);

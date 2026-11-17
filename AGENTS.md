@@ -578,7 +578,10 @@ apps/extension/src/
 │   ├── walletConnect/       # WalletConnect relay audit domain (see README.md)
 │   │   ├── client.ts        # SDK lifecycle, listeners, generation, reset cutover
 │   │   ├── sessionCommands.ts # Trusted-UI list/pair/disconnect/chain commands
-│   │   ├── sessionProposal.ts # Signing-account namespace approval policy
+│   │   ├── proposalIntake.ts # Proposal intake: record + surface, never auto-approves
+│   │   ├── sessionProposal.ts # Namespace approval policy after explicit Connect
+│   │   ├── proposalStorage.ts # Bounded walletConnectPendingProposals review queue
+│   │   ├── proposalDecisions.ts # Trusted-UI Connect/Reject decisions (injected SDK deps)
 │   │   ├── requestRouter.ts # Claimed, validated session-request dispatch
 │   │   ├── pendingRequests.ts # Pinned tx/signature confirmation prompts
 │   │   ├── batchRequests.ts # ERC-5792 request adapters
@@ -631,6 +634,7 @@ apps/extension/src/
 │   ├── Ledger/                # Hardware pairing/address selection/signing status
 │   ├── Portfolio/Holdings/    # Portfolio loading and holdings UI domain
 │   ├── SafeAccount/           # Safe import, progressive discovery, and authority UI
+│   ├── WalletConnectProposal/ # WalletConnect "Connect app" review (Verify badge, account picker)
 │   ├── TransactionConfirmation/ # Single-tx review/decision UI domain
 │   ├── TransactionDetails/    # Activity detail UI domain
 │   ├── Transfer/              # Send/transfer UI domain

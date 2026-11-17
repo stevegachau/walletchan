@@ -47,3 +47,42 @@ export interface WalletConnectRetryNotice {
   chainName: string;
   chainId: number;
 }
+
+/** WalletConnect Verify API verdict for the proposer's claimed domain. */
+export type WalletConnectVerifyValidation = "VALID" | "INVALID" | "UNKNOWN";
+
+export interface WalletConnectProposalVerification {
+  validation: WalletConnectVerifyValidation;
+  /** Attested origin (sanitized http/https URL) or "" when absent. */
+  origin: string;
+  isScam: boolean;
+}
+
+/**
+ * Display-only, non-secret summary of a WalletConnect session proposal that
+ * is waiting for the user's Connect/Reject decision. The authoritative
+ * namespaces stay in the WalletKit SDK store and are re-read on approval.
+ */
+export interface PendingWalletConnectProposal {
+  id: number;
+  pairingTopic: string;
+  name: string;
+  url: string;
+  description?: string;
+  icons: string[];
+  requiredChainIds: number[];
+  optionalChainIds: number[];
+  methods: string[];
+  verification: WalletConnectProposalVerification;
+  createdAt: number;
+  expiresAt: number;
+}
+
+export type WalletConnectProposalDecisionResult =
+  | { success: true }
+  | {
+      success: false;
+      error: string;
+      code?: "invalid" | "notFound" | "expired" | "accountChanged" | "rejected";
+      rejection?: WalletConnectProposalRejection;
+    };

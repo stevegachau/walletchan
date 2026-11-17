@@ -117,6 +117,13 @@
     }
   }
 
+  function hideToast() {
+    const el = document.getElementById("wc-toast");
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = null;
+    if (el) el.classList.remove("visible");
+  }
+
   // ---------------------------------------------------------------------------
   // Storage (chrome.storage.local / sync persisted in IndexedDB, session in memory)
   // ---------------------------------------------------------------------------
@@ -896,21 +903,30 @@
    * Bring the wallet forward, and once the UI is back on its home screen (all
    * queued requests handled) return to whoever sent it, like closing a popup.
    */
-  let inlineRequest = null; // { since, returnTo: "external" | "dapp" | null, leftHome }
+  // { since, returnTo: "external" | "dapp" | null, leftHome, pairing }
+  let inlineRequest = null;
   const INLINE_REQUEST = /^newPending[A-Za-z]*Request$|^newSafeProposalRequest$/;
+  const WALLETCONNECT_PROPOSAL_REQUEST = "newPendingWalletConnectProposalRequest";
 
   busObservers.push((message) => {
     if (!message || typeof message.type !== "string" || !INLINE_REQUEST.test(message.type)) return;
+    // A connection review started by our own pairing (QR, deep link, pasted
+    // link) is returned from by that pairing once the outcome is known, so the
+    // home-screen tracker must not return a second time.
+    const ownedByPairing = message.type === WALLETCONNECT_PROPOSAL_REQUEST && walletConnectPairings > 0;
     // Deferred: let the overlay path (popup mode) register first, if used.
-    setTimeout(onInlineRequest, 0);
+    setTimeout(() => onInlineRequest(ownedByPairing), 0);
   });
 
-  function onInlineRequest() {
+  function onInlineRequest(ownedByPairing = false) {
     if (overlayWindows.size > 0) return; // popup mode: overlays handle returning
     const armed = pendingReturn && Date.now() < pendingReturn.until ? pendingReturn.source : null;
-    const returnTo = dappVisible && dappTab ? "dapp" : armed;
-    if (!inlineRequest) inlineRequest = { since: Date.now(), returnTo, leftHome: false };
-    else if (returnTo && !inlineRequest.returnTo) inlineRequest.returnTo = returnTo;
+    const returnTo = ownedByPairing ? null : dappVisible && dappTab ? "dapp" : armed;
+    if (!inlineRequest) inlineRequest = { since: Date.now(), returnTo, leftHome: false, pairing: ownedByPairing };
+    else if (ownedByPairing) {
+      inlineRequest.pairing = true;
+      inlineRequest.returnTo = null;
+    } else if (returnTo && !inlineRequest.returnTo && !inlineRequest.pairing) inlineRequest.returnTo = returnTo;
     nativePost({ cmd: "showWallet" });
     nativePost({ cmd: "requestAttention", title: "WalletChan", message: "A dApp is waiting for your approval. Tap to review." });
   }
@@ -929,7 +945,7 @@
       const target = inlineRequest.returnTo;
       inlineRequest = null;
       if (target) returnToCaller(target);
-    } else if (Date.now() - inlineRequest.since > 120_000) {
+    } else if (Date.now() - inlineRequest.since > (inlineRequest.pairing ? 15 * 60_000 : 120_000)) {
       inlineRequest = null;
     }
   }
@@ -953,7 +969,10 @@
 
   async function refreshWalletConnectSessionCount() {
     const response = await sendAsWalletUi({ type: "walletConnectGetSessions" }).catch(() => null);
-    if (response && Array.isArray(response.sessions)) reportWalletConnectSessions(response.sessions.length);
+    if (response && Array.isArray(response.sessions)) {
+      reportWalletConnectSessions(response.sessions.length);
+      for (const session of response.sessions) if (session && session.topic) knownWalletConnectTopics.add(session.topic);
+    }
   }
 
   busObservers.push((message) => {
@@ -996,7 +1015,7 @@
   function armReturnToCaller(source) {
     if (source !== "external" && source !== "dapp") return;
     pendingReturn = { source, until: Date.now() + RETURN_WINDOW_MS };
-    if (inlineRequest && !inlineRequest.returnTo) inlineRequest.returnTo = source;
+    if (inlineRequest && !inlineRequest.returnTo && !inlineRequest.pairing) inlineRequest.returnTo = source;
     // The relay may have delivered the request before the link arrived.
     for (const overlay of overlayWindows.values()) {
       const tab = overlayTabs.get(overlay.tabId);
@@ -1729,6 +1748,22 @@
   }
 
   let walletConnectBusy = false;
+  /** Pairings (shell- or UI-initiated) still waiting for the user's decision. */
+  let walletConnectPairings = 0;
+  /** Session topics last reported by the background (kept current from the bus). */
+  const knownWalletConnectTopics = new Set();
+
+  busObservers.push((message) => {
+    if (message && message.type === "walletConnectSessionsChanged" && Array.isArray(message.sessions)) {
+      knownWalletConnectTopics.clear();
+      for (const session of message.sessions) if (session && session.topic) knownWalletConnectTopics.add(session.topic);
+    }
+  });
+
+  async function rememberWalletConnectTopics(target) {
+    const response = await sendAsWalletUi({ type: "walletConnectGetSessions" }).catch(() => null);
+    for (const session of (response && response.sessions) || []) if (session && session.topic) target.add(session.topic);
+  }
 
   async function pairWalletConnect(uri, source) {
     nativePost({ cmd: "showWallet" });
@@ -1737,45 +1772,81 @@
       return;
     }
     walletConnectBusy = true;
+    let watcher = null;
     try {
       const accounts = await sendAsWalletUi({ type: "getAccounts" }).catch(() => null);
       if (!Array.isArray(accounts) || accounts.length === 0) {
         showToast("Set up your wallet before connecting a dApp", "error", 5000);
         return;
       }
-      // No unlock needed: pairing and session approval use public addresses
-      // only. Signing requests ask for the password in their own window.
+      // Pairing needs no unlock. The wallet UI then shows the connection
+      // review (after the unlock screen if the wallet is locked); nothing is
+      // connected until the user taps Connect.
       showToast("Connecting via WalletConnect…", "info", 0);
-      const before = await sendAsWalletUi({ type: "walletConnectGetSessions" }).catch(() => null);
-      const knownTopics = new Set(((before && before.sessions) || []).map((s) => s.topic));
-      const sessionWatcher = waitForWalletConnectOutcome(knownTopics, 45_000);
+      const knownTopics = new Set(knownWalletConnectTopics);
+      await rememberWalletConnectTopics(knownTopics);
+      watcher = waitForWalletConnectOutcome(knownTopics);
       const result = await sendAsWalletUi({ type: "walletConnectPair", uri });
       if (!result || !result.success) {
-        sessionWatcher.cancel();
+        watcher.cancel();
         showToast("WalletConnect failed: " + ((result && result.error) || "unknown error"), "error", 6000);
         return;
       }
-      const outcome = await sessionWatcher.promise;
-      if (outcome.kind === "connected") {
-        showToast("Connected to " + (outcome.name || "dApp"), "success");
-        // Opened from a dApp on this phone: go back to it, now connected.
-        if (source === "external" || source === "dapp") setTimeout(() => returnToCaller(source), 1200);
-      } else if (outcome.kind === "rejected") {
-        showToast("WalletConnect: " + (outcome.error || "connection rejected"), "error", 6000);
-      } else {
-        showToast("Waiting for the dApp… keep it open", "info");
-      }
+      const outcome = await watcher.promise;
+      // Opened from a dApp on this phone: go back to it after the decision.
+      finishWalletConnectPairing(outcome, source === "external" || source === "dapp" ? source : null);
     } catch (error) {
+      if (watcher) watcher.cancel();
       showToast("WalletConnect failed: " + (error.message || error), "error", 6000);
     } finally {
       walletConnectBusy = false;
     }
   }
 
-  function waitForWalletConnectOutcome(knownTopics, timeoutMs) {
+  /**
+   * Shows the outcome of a pairing and returns to the calling app (once) after
+   * the user approved or rejected the connection. Errors stay on screen so the
+   * user can read them.
+   */
+  function finishWalletConnectPairing(outcome, returnTo) {
+    if (outcome.kind === "connected") {
+      const suffix = returnTo === "external" ? " — returning to your browser" : "";
+      showToast("Connected to " + (outcome.name || "dApp") + suffix, "success");
+    } else if (outcome.kind === "userRejected") {
+      showToast("Connection rejected", "info");
+    } else if (outcome.kind === "rejected") {
+      showToast("WalletConnect: " + (outcome.error || "connection rejected"), "error", 6000);
+      return;
+    } else if (outcome.kind === "timeout") {
+      showToast("Waiting for the dApp… keep it open", "info");
+      return;
+    } else {
+      hideToast();
+      return;
+    }
+    if (returnTo) setTimeout(() => returnToCaller(returnTo), 1200);
+  }
+
+  const PROPOSAL_ARRIVAL_TIMEOUT_MS = 45_000;
+  const PROPOSAL_DECISION_TIMEOUT_MS = 10 * 60_000;
+
+  /**
+   * Resolves with the first outcome of a pairing: a new session ("connected"),
+   * the user's rejection ("userRejected"), a policy rejection ("rejected"), no
+   * proposal within 45 s ("timeout"), or no decision before the proposal
+   * expired ("undecided"). While the connection review is on screen the
+   * progress toast is hidden and the wait extends to the proposal's expiry.
+   */
+  function waitForWalletConnectOutcome(knownTopics) {
     let observer;
     let timer;
+    let proposalId = null;
+    walletConnectPairings += 1;
     const promise = new Promise((resolve) => {
+      const arm = (ms, kind) => {
+        clearTimeout(timer);
+        timer = setTimeout(() => resolve({ kind }), ms);
+      };
       observer = (message) => {
         if (!message || typeof message !== "object") return;
         if (message.type === "walletConnectSessionsChanged" && Array.isArray(message.sessions)) {
@@ -1783,12 +1854,23 @@
           if (fresh) resolve({ kind: "connected", name: (fresh.peer && fresh.peer.name) || fresh.name || fresh.peerName });
         } else if (message.type === "walletConnectProposalRejected") {
           resolve({ kind: "rejected", error: message.rejection && message.rejection.error });
+        } else if (message.type === "walletConnectProposalUserRejected") {
+          if (proposalId === null || message.proposalId === proposalId) resolve({ kind: "userRejected", name: message.name });
+        } else if (message.type === WALLETCONNECT_PROPOSAL_REQUEST && message.proposal && proposalId === null) {
+          proposalId = message.proposal.id;
+          hideToast();
+          const untilExpiry = Number(message.proposal.expiresAt) - Date.now() + 5_000;
+          arm(Number.isFinite(untilExpiry) && untilExpiry > 0 ? Math.min(untilExpiry, PROPOSAL_DECISION_TIMEOUT_MS) : PROPOSAL_DECISION_TIMEOUT_MS, "undecided");
         }
       };
       busObservers.push(observer);
-      timer = setTimeout(() => resolve({ kind: "timeout" }), timeoutMs);
+      arm(PROPOSAL_ARRIVAL_TIMEOUT_MS, "timeout");
     });
+    let cleaned = false;
     const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      walletConnectPairings -= 1;
       clearTimeout(timer);
       const index = busObservers.indexOf(observer);
       if (index >= 0) busObservers.splice(index, 1);
@@ -1800,9 +1882,9 @@
   /**
    * Pairing started from the wallet's own WalletConnect screen (a pasted
    * `wc:` link). On a phone that link was almost always copied from a dApp in
-   * the browser, so once connected, hand the user back to it, like a deep link.
-   * QR scans go through pairWalletConnect (walletConnectBusy) and stay put:
-   * the dApp is on another device.
+   * the browser, so once the user decides, hand them back to it, like a deep
+   * link. QR scans go through pairWalletConnect (walletConnectBusy) and stay
+   * put: the dApp is on another device.
    */
   busObservers.push((message) => {
     if (!message || message.type !== "walletConnectPair" || walletConnectBusy) return;
@@ -1810,12 +1892,14 @@
   });
 
   async function returnAfterUiPairing() {
-    const before = await sendAsWalletUi({ type: "walletConnectGetSessions" }).catch(() => null);
-    const knownTopics = new Set(((before && before.sessions) || []).map((s) => s.topic));
-    const outcome = await waitForWalletConnectOutcome(knownTopics, 45_000).promise;
-    if (outcome.kind !== "connected") return;
-    showToast("Connected to " + (outcome.name || "dApp") + " — returning to your browser", "success");
-    setTimeout(() => returnToCaller("external"), 1200);
+    // Watch first (synchronously) so a fast proposal is not missed; topics
+    // fetched afterwards are only pre-existing sessions (no decision yet).
+    const knownTopics = new Set(knownWalletConnectTopics);
+    const watcher = waitForWalletConnectOutcome(knownTopics);
+    await rememberWalletConnectTopics(knownTopics);
+    const outcome = await watcher.promise;
+    if (outcome.kind !== "connected" && outcome.kind !== "userRejected") return;
+    finishWalletConnectPairing(outcome, "external");
   }
 
   /** `source`: "external" | "dapp" | "wallet" for deep links, undefined for QR scans. */

@@ -64,12 +64,7 @@ import {
   handleRemoveAccount,
   writeResultToStorage,
 } from "../../txHandlers";
-import {
-  handleWalletConnectDisconnectSession,
-  handleWalletConnectGetSessions,
-  handleWalletConnectPair,
-  handleWalletConnectSwitchChain,
-} from "../../walletConnect/sessionCommands";
+import { handleWalletConnectDisconnectSession, handleWalletConnectGetSessions, handleWalletConnectPair, handleWalletConnectSwitchChain, walletConnectProposalCommands } from "../../walletConnect/sessionCommands";
 import { createBackgroundAccountManagementMessageRouter } from "../accountManagementRouter";
 import { createBackgroundDappPermissionMessageRouter } from "../dappPermissionRouter";
 import { createBackgroundSecretManagementMessageRouter } from "../secretManagementRouter";
@@ -127,6 +122,9 @@ export function composeAccountRoutes(pending: PendingResolutionComposition) {
       handleWalletConnectPair,
       handleWalletConnectDisconnectSession,
       handleWalletConnectSwitchChain,
+      ...walletConnectProposalCommands,
+      runPendingRequestResolution: pending.runPendingRequestResolution,
+      pendingResolutionConflict: pending.pendingResolutionConflict,
     });
 
   const routeBackgroundAccountManagementMessage =

@@ -24,7 +24,8 @@ import {
   teardownWalletConnectSdkState,
   type WalletConnectResetSummary,
 } from "./reset";
-import { handleWalletConnectSessionProposal } from "./sessionProposal";
+import { handleWalletConnectSessionProposal } from "./proposalIntake";
+import { clearPendingWalletConnectProposals, takePendingWalletConnectProposal } from "./proposalStorage";
 
 type WalletKitInstance = Awaited<ReturnType<typeof WalletKit.init>>;
 
@@ -60,6 +61,7 @@ let listenerRegistration:
       proposal: (proposal: any) => void;
       request: (request: any) => void;
       deleted: (event: any) => void;
+      expired: (event: any) => void;
     }
   | undefined;
 
@@ -114,7 +116,7 @@ export async function broadcastWalletConnectSessionsChanged(): Promise<void> {
     .catch(() => {});
 }
 
-function broadcastProposalRejected(
+export function broadcastWalletConnectProposalRejected(
   rejection: WalletConnectProposalRejection,
 ): void {
   chrome.runtime
@@ -131,6 +133,7 @@ function detachWalletKitListeners(): void {
   current.kit.off("session_proposal", current.proposal);
   current.kit.off("session_request", current.request);
   current.kit.off("session_delete", current.deleted);
+  current.kit.off("proposal_expire", current.expired);
   listenerRegistration = undefined;
 }
 
@@ -143,12 +146,11 @@ function attachWalletKitListeners(
 
   const proposal = (value: any) => {
     if (generation !== walletConnectGeneration) return;
-    void handleWalletConnectSessionProposal(
-      kit,
-      value,
-      broadcastWalletConnectSessionsChanged,
-      broadcastProposalRejected,
-    );
+    void handleWalletConnectSessionProposal(kit, value).catch(() => undefined); // never approves
+  };
+  const expired = (value: any) => {
+    if (generation !== walletConnectGeneration || !Number.isSafeInteger(value?.id)) return;
+    void takePendingWalletConnectProposal(value.id).catch(() => undefined);
   };
   const request = (value: any) => {
     if (generation !== walletConnectGeneration) return;
@@ -173,10 +175,11 @@ function attachWalletKitListeners(
       }
     })();
   };
-  listenerRegistration = { kit, proposal, request, deleted };
+  listenerRegistration = { kit, proposal, request, deleted, expired };
   kit.on("session_proposal", proposal);
   kit.on("session_request", request);
   kit.on("session_delete", deleted);
+  kit.on("proposal_expire", expired);
 }
 
 export async function resetWalletConnectForWalletReset(): Promise<
@@ -209,6 +212,10 @@ export async function resetWalletConnectForWalletReset(): Promise<
       currentCore,
       currentKit,
     );
+    // Pending connection reviews belong to the retired SDK identity.
+    await clearPendingWalletConnectProposals().catch((error) => {
+      summary.warnings.push(`clear pending proposals: ${error instanceof Error ? error.message : "unknown error"}`);
+    });
 
     // Persist the cutover before background.ts is allowed to wipe wallet
     // secrets. Cleanup failures remain safe because the old namespace is never

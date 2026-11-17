@@ -6,7 +6,9 @@ import {
   resumeWalletConnectTopicAfterFailedTermination,
 } from "../requests/pendingWalletConnectLifecycle";
 import { getWalletConnectActiveChainId, setWalletConnectActiveChainByName } from "./chainState";
+import { createWalletConnectProposalDecisionHandlers } from "./proposalDecisions";
 import {
+  broadcastWalletConnectProposalRejected,
   broadcastWalletConnectSessionsChanged,
   ensureWalletKit,
   getActiveWalletConnectSessionSummaries,
@@ -85,3 +87,11 @@ export async function handleWalletConnectSwitchChain(chainName: string) {
     };
   }
 }
+
+/** Connect/Reject decisions on pending session proposals, bound to this client. */
+export const walletConnectProposalCommands =
+  createWalletConnectProposalDecisionHandlers({
+    ensureWalletKit,
+    onSessionsChanged: broadcastWalletConnectSessionsChanged,
+    onProposalRejected: broadcastWalletConnectProposalRejected,
+  });

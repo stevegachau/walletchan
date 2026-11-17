@@ -33,6 +33,7 @@ export const WALLET_LOCAL_STORAGE_KEYS = [
   "pendingDappConnectionRequests",
   "walletConnectPendingRequests",
   "walletConnectChainId",
+  "walletConnectPendingProposals",
   "crossDappBatch",
   "bundleStatuses",
   "pendingBridges",

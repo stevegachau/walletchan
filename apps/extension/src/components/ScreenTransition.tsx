@@ -33,7 +33,7 @@ export type AppView =
   | "erc7715PermissionConfirm"
   | "watchAssetConfirm"
   | "addChainConfirm"
-  | "dappConnectionConfirm"
+  | "dappConnectionConfirm" | "walletConnectProposalConfirm"
   | "waitingForOnboarding"
   | "chat"
   | "addAccount"
@@ -81,6 +81,7 @@ export const SCREEN_META: Record<AppView, ScreenMeta> = {
   watchAssetConfirm: { kind: "slide", depth: 1 },
   addChainConfirm: { kind: "slide", depth: 1 },
   dappConnectionConfirm: { kind: "slide", depth: 1 },
+  walletConnectProposalConfirm: { kind: "slide", depth: 1 },
   unlock: { kind: "fade", depth: 0 },
   waitingForOnboarding: { kind: "fade", depth: 0 },
 };

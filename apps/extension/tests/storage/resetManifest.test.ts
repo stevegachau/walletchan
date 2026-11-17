@@ -44,6 +44,7 @@ test("wallet reset local and sync manifests retain their exact released keys", (
     "pendingDappConnectionRequests",
     "walletConnectPendingRequests",
     "walletConnectChainId",
+    "walletConnectPendingProposals",
     "crossDappBatch",
     "bundleStatuses",
     "pendingBridges",

@@ -11,6 +11,10 @@
 - `DappConnectionReputationNotice.tsx` renders loading, custom-domain
   verification, directory recognition, unverified, outage, blocklist, and
   lookalike states plus the explicit high-risk acknowledgement.
+- `ConnectionRequestHeader.tsx` and `ConnectionPermissionList.tsx` are
+  presentational pieces shared with the WalletConnect connection review
+  (`../WalletConnectProposal/`): requester icon/name heading with a badge slot,
+  and the "This site/app can" permission list. They hold no state or effects.
 
 `DappConnectionConfirmation.tsx` remains the public composition root. The
 background service worker owns network effects; this folder only formats and

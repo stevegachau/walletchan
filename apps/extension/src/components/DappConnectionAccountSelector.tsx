@@ -34,6 +34,8 @@ interface DappConnectionAccountSelectorProps {
   account: Account;
   onAccountSelect: (account: Account) => void | Promise<void>;
   chainId?: number;
+  /** Picker helper copy; defaults to the injected-site wording. */
+  pickerDescription?: string;
 }
 
 export default function DappConnectionAccountSelector({
@@ -41,6 +43,7 @@ export default function DappConnectionAccountSelector({
   account,
   onAccountSelect,
   chainId,
+  pickerDescription = "Choose the account this site can see",
 }: DappConnectionAccountSelectorProps) {
   const [isPickerOpen, setIsPickerOpen] = useState(false);
   const [switchingAccountId, setSwitchingAccountId] = useState<string | null>(null);
@@ -160,7 +163,7 @@ export default function DappConnectionAccountSelector({
           >
             <FullScreenPickerGroup
               label="Accounts"
-              description="Choose the account this site can see"
+              description={pickerDescription}
             >
               {accounts.map((candidate) => {
                 return (

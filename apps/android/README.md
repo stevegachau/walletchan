@@ -108,6 +108,10 @@ Logging into apps with WalletConnect is a first-class flow:
   shell as `{type:"deepLink", url}` from both cold start and `onNewIntent`,
   queued until the shell's `hello`. Relaunching from Recents does not replay
   an old link.
+- **Connection review:** pairing never connects by itself. The wallet shows
+  a "Connect app" screen (dApp icon/name/url, WalletConnect Verify badge,
+  requested networks, account picker); the user taps Connect or Reject, and
+  for links from another app the wallet then returns to that app once.
 - **Inside the dApp browser:** `wc:` / `walletchan:` navigations become
   `deepLink`s instead of being loaded; other non-http schemes (`intent:`,
   `tg:`, `mailto:`, `market:` …) are handed to other apps defensively

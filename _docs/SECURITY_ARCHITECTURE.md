@@ -630,7 +630,11 @@ request adapters and dispatch → SDK client composition. `pendingRequests.ts`
 creates account-pinned transaction/signature prompts; `requestRouter.ts` never
 writes those stores directly. `client.ts` owns generation-bound WalletKit
 listeners and namespace cutover but imports neither trusted-UI commands nor the
-result bridge; those higher layers import the client. Every implementation is
+result bridge; those higher layers import the client. Session proposals are
+recorded by `proposalIntake.ts` into the bounded `proposalStorage.ts` queue
+and approved only by the trusted-UI `proposalDecisions.ts` handlers, which
+receive the WalletKit client by injection (bound in `sessionCommands.ts`)
+rather than importing `client.ts`. Every implementation is
 independently ratcheted below 400 lines and the local `README.md` maps storage,
 relay, proposal, keepalive, and reset effects.
 

@@ -13,6 +13,10 @@ models, but they never import the `App.tsx` composition root itself.
 - `hooks/useSafeRequestNavigation.ts` owns Safe review selection, pinned-account
   navigation, and routing through unlock.
 - `lazyScreens.ts` owns route-level lazy imports and idle chunk preloading.
+- `hooks/useWalletConnectProposalRoute.ts` owns the WalletConnect session
+  proposal under review: live `newPendingWalletConnectProposalRequest`
+  arrivals open it, and startup/post-unlock routing loads the newest pending
+  proposal (after injected-site connection requests, before signatures).
 - `hooks/useRuntimeMessaging.ts` owns service-worker wake/retry messaging and
   the reconnecting renderer keepalive port.
 - `home/` and `screens/` contain small App-owned presentation adapters.

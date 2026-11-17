@@ -87,6 +87,7 @@ import { isPrivacyPoolsMutationAccount } from "@/chrome/privacy/deployment/accou
 import type { PortfolioToken } from "@/chrome/portfolio/api";
 import type { CompletedTransaction } from "@/chrome/txHistoryStorage";
 import type {
+  PendingWalletConnectProposal,
   WalletConnectAddChainContext,
   WalletConnectRetryNotice,
   WalletConnectSessionSummary,
@@ -139,6 +140,8 @@ import { PrivatePortfolioHome, useWalletHomeMode, WalletModeToggle } from "@/app
 import type { UnshieldOperation } from "@/components/Shield/model/unshield";
 import PrivacyActionRoute from "@/app/screens/PrivacyActionRoute";
 import TransactionDetailRoute from "@/app/screens/TransactionDetailRoute";
+import WalletConnectProposalRoute from "@/app/screens/WalletConnectProposalRoute";
+import { useWalletConnectProposalRoute } from "@/app/hooks/useWalletConnectProposalRoute";
 import { clearRendererMemoryCache } from "@/app/rendererMemoryCache";
 
 function App() {
@@ -298,6 +301,7 @@ function App() {
   const [walletConnectChainId, setWalletConnectChainId] = useState<number | null>(null);
   const { establishKeepalivePort, sendMessageWithRetry } =
     useRuntimeMessaging();
+  const walletConnectProposalRoute = useWalletConnectProposalRoute(sendMessageWithRetry, setView);
   const walletConnectStoredChain = walletConnectChainId
     ? getResolvedChainById(walletConnectChainId, networksInfo)
     : undefined;
@@ -390,6 +394,13 @@ function App() {
       type: "getPendingDappConnectionRequests",
     });
     return requests || [];
+  };
+
+  // A dapp connection review shows the account scoped to the requesting tab.
+  const showDappRequestTabAccount = async (tabId?: number) => {
+    if (typeof tabId !== "number") return;
+    const requestAccount = await sendMessageWithRetry<Account | null>({ type: "getTabAccount", tabId });
+    if (requestAccount) setActiveAccount(requestAccount);
   };
 
   const loadActiveDappContext = useCallback(
@@ -887,13 +898,7 @@ function App() {
         setView(isUnlocked ? "addAccount" : "unlock");
       } else if (hintedApprovalRoute) {
         if (hintedApprovalRoute.kind === "safe") await openSafeApprovals(hintedApprovalRoute.request.id);
-        if (hintedApprovalRoute.kind === "dappConnection" &&
-            typeof hintedApprovalRoute.request.tabId === "number") {
-          const requestAccount = await sendMessageWithRetry<Account | null>(
-            { type: "getTabAccount", tabId: hintedApprovalRoute.request.tabId },
-          );
-          if (requestAccount) setActiveAccount(requestAccount);
-        }
+        if (hintedApprovalRoute.kind === "dappConnection") await showDappRequestTabAccount(hintedApprovalRoute.request.tabId);
       } else if (!isUnlocked) {
         setView("unlock");
       } else if (requests.length > 0) {
@@ -911,14 +916,10 @@ function App() {
       } else if (dappConnectionRequests.length > 0) {
         const request = dappConnectionRequests[dappConnectionRequests.length - 1];
         setPendingDappConnectionRequest(request);
-        if (typeof request.tabId === "number") {
-          const requestAccount = await sendMessageWithRetry<Account | null>({
-            type: "getTabAccount",
-            tabId: request.tabId,
-          });
-          if (requestAccount) setActiveAccount(requestAccount);
-        }
+        await showDappRequestTabAccount(request.tabId);
         setView("dappConnectionConfirm");
+      } else if (await walletConnectProposalRoute.openNewest()) {
+        // Routed to the WalletConnect connection review.
       } else if (sigRequests.length > 0) {
         // Auto-open newest (last) pending signature request
         setSelectedSignatureRequest(sigRequests[sigRequests.length - 1]);
@@ -957,6 +958,7 @@ function App() {
           | PendingAddChainRequest
           | PendingDappConnectionRequest;
         batchRequest?: PendingBatchTxRequest;
+        proposal?: PendingWalletConnectProposal;
         sessions?: WalletConnectSessionSummary[];
         activeChainId?: number | null;
         chainId?: number;
@@ -966,6 +968,16 @@ function App() {
       _sender: chrome.runtime.MessageSender,
       sendResponse: (response?: any) => void,
     ): boolean | undefined => {
+      // Live requests open their review only when unlocked; otherwise unlock
+      // first and let post-unlock routing pick the request up.
+      const openWhenUnlocked = (open: () => void | Promise<void>) => {
+        void (async () => {
+          const isUnlocked = await checkLockState();
+          setIsWalletUnlocked(isUnlocked);
+          if (isUnlocked) await open();
+          else setView("unlock");
+        })();
+      };
       if (message.type === "ping") {
         // Respond to ping so background knows we're open
         sendResponse("pong");
@@ -977,16 +989,10 @@ function App() {
         setPendingRequests((current) =>
           current.some((request) => request.id === txRequest.id) ? current : [...current, txRequest]
         );
-        (async () => {
-          const isUnlocked = await checkLockState();
-          setIsWalletUnlocked(isUnlocked);
-          if (isUnlocked) {
-            setSelectedTxRequest(txRequest);
-            setView("txConfirm");
-          } else {
-            setView("unlock");
-          }
-        })();
+        openWhenUnlocked(() => {
+          setSelectedTxRequest(txRequest);
+          setView("txConfirm");
+        });
         return;
       }
       if (message.type === "newSafeProposalRequest" && message.proposalId) {
@@ -1000,16 +1006,10 @@ function App() {
         // Don't append to pendingSignatureRequests here — the storage change listener
         // will sync the full list from chrome.storage.local, avoiding duplicates.
         // Just handle view switching.
-        (async () => {
-          const isUnlocked = await checkLockState();
-          setIsWalletUnlocked(isUnlocked);
-          if (isUnlocked) {
-            setSelectedSignatureRequest(sigRequest);
-            setView("signatureConfirm");
-          } else {
-            setView("unlock");
-          }
-        })();
+        openWhenUnlocked(() => {
+          setSelectedSignatureRequest(sigRequest);
+          setView("signatureConfirm");
+        });
         return;
       }
       if (message.type === "newPendingBatchTxRequest" && message.batchRequest) {
@@ -1017,16 +1017,10 @@ function App() {
         if (batchRequestSoundGateRef.current.claim(batchReq.id)) {
           void playInteractionSound("requestReceived");
         }
-        (async () => {
-          const isUnlocked = await checkLockState();
-          setIsWalletUnlocked(isUnlocked);
-          if (isUnlocked) {
-            setSelectedBatchRequest(batchReq);
-            setView("batchTxConfirm");
-          } else {
-            setView("unlock");
-          }
-        })();
+        openWhenUnlocked(() => {
+          setSelectedBatchRequest(batchReq);
+          setView("batchTxConfirm");
+        });
         return;
       }
       if (
@@ -1036,46 +1030,28 @@ function App() {
         void playInteractionSound("requestReceived");
         const permissionRequest =
           message.request as PendingErc7715PermissionRequest;
-        (async () => {
-          const isUnlocked = await checkLockState();
-          setIsWalletUnlocked(isUnlocked);
-          if (isUnlocked) {
-            setSelectedErc7715PermissionRequest(permissionRequest);
-            setView("erc7715PermissionConfirm");
-          } else {
-            setView("unlock");
-          }
-        })();
+        openWhenUnlocked(() => {
+          setSelectedErc7715PermissionRequest(permissionRequest);
+          setView("erc7715PermissionConfirm");
+        });
         return;
       }
       if (message.type === "newPendingWatchAssetRequest" && message.request) {
         void playInteractionSound("requestReceived");
         const watchRequest = message.request as PendingWatchAssetRequest;
-        (async () => {
-          const isUnlocked = await checkLockState();
-          setIsWalletUnlocked(isUnlocked);
-          if (isUnlocked) {
-            setPendingWatchAssetRequest(watchRequest);
-            setView("watchAssetConfirm");
-          } else {
-            setView("unlock");
-          }
-        })();
+        openWhenUnlocked(() => {
+          setPendingWatchAssetRequest(watchRequest);
+          setView("watchAssetConfirm");
+        });
         return;
       }
       if (message.type === "newPendingAddChainRequest" && message.request) {
         void playInteractionSound("requestReceived");
         const addChainReq = message.request as PendingAddChainRequest;
-        (async () => {
-          const isUnlocked = await checkLockState();
-          setIsWalletUnlocked(isUnlocked);
-          if (isUnlocked) {
-            setPendingAddChainRequest(addChainReq);
-            setView("addChainConfirm");
-          } else {
-            setView("unlock");
-          }
-        })();
+        openWhenUnlocked(() => {
+          setPendingAddChainRequest(addChainReq);
+          setView("addChainConfirm");
+        });
         return;
       }
       if (
@@ -1085,23 +1061,17 @@ function App() {
         void playInteractionSound("requestReceived");
         const connectionRequest =
           message.request as PendingDappConnectionRequest;
-        (async () => {
-          const isUnlocked = await checkLockState();
-          setIsWalletUnlocked(isUnlocked);
-          if (isUnlocked) {
-            if (typeof connectionRequest.tabId === "number") {
-              const requestAccount = await sendMessageWithRetry<Account | null>({
-                type: "getTabAccount",
-                tabId: connectionRequest.tabId,
-              });
-              if (requestAccount) setActiveAccount(requestAccount);
-            }
-            setPendingDappConnectionRequest(connectionRequest);
-            setView("dappConnectionConfirm");
-          } else {
-            setView("unlock");
-          }
-        })();
+        openWhenUnlocked(async () => {
+          await showDappRequestTabAccount(connectionRequest.tabId);
+          setPendingDappConnectionRequest(connectionRequest);
+          setView("dappConnectionConfirm");
+        });
+        return;
+      }
+      if (message.type === "newPendingWalletConnectProposalRequest" && message.proposal) {
+        void playInteractionSound("requestReceived");
+        const proposal = message.proposal;
+        openWhenUnlocked(() => walletConnectProposalRoute.open(proposal));
         return;
       }
       if (message.type === "onboardingComplete") {
@@ -1644,14 +1614,10 @@ function App() {
     } else if (dappConnectionReqs.length > 0) {
       const request = dappConnectionReqs[dappConnectionReqs.length - 1];
       setPendingDappConnectionRequest(request);
-      if (typeof request.tabId === "number") {
-        const requestAccount = await sendMessageWithRetry<Account | null>({
-          type: "getTabAccount",
-          tabId: request.tabId,
-        });
-        if (requestAccount) setActiveAccount(requestAccount);
-      }
+      await showDappRequestTabAccount(request.tabId);
       setView("dappConnectionConfirm");
+    } else if (await walletConnectProposalRoute.openNewest()) {
+      // Routed to the WalletConnect connection review.
     } else if (sigRequests.length > 0) {
       setSelectedSignatureRequest(sigRequests[sigRequests.length - 1]);
       setView("signatureConfirm");
@@ -3268,6 +3234,25 @@ function App() {
           </Suspense>
         </Box>
       </Box>
+    );
+  }
+
+  if (view === "walletConnectProposalConfirm" && walletConnectProposalRoute.proposal) {
+    return (
+      <WalletConnectProposalRoute
+        proposal={walletConnectProposalRoute.proposal}
+        accounts={accounts}
+        sidePanelSupported={sidePanelSupported}
+        sidePanelMode={sidePanelMode}
+        isFullscreenTab={isFullscreenTab}
+        onToggleSidePanel={toggleSidePanelMode}
+        onOpenFullscreen={openInFullscreenTab}
+        onFinished={() => {
+          walletConnectProposalRoute.finish();
+          if (isInSidePanel || isFullscreenTab) setView("main");
+          else window.close();
+        }}
+      />
     );
   }
 

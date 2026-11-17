@@ -12,8 +12,29 @@ compatibility family. Review implementation in this order:
    signature, ERC-5792, and safe RPC method adapters.
 4. `requestRouter.ts` — claimed session-request dispatch after validation and
    method approval.
-5. `proposal.ts`, `sessionProposal.ts`, `chainState.ts` — namespace approval,
-   rejection metadata, and active-chain synchronization.
+5. `proposal.ts`, `proposalIntake.ts`, `proposalStorage.ts`,
+   `proposalDecisions.ts`, `sessionProposal.ts`, `chainState.ts` — proposal intake, the explicit
+   user decision, namespace approval, rejection metadata, and active-chain
+   synchronization. A `session_proposal` is never auto-approved:
+   `proposalIntake.ts` records a sanitized, display-only entry in the bounded
+   `walletConnectPendingProposals` queue (`proposalStorage.ts`: ≤10 live
+   entries, expiry from `params.expiryTimestamp` capped at 15 minutes, atomic
+   first-wins removal), broadcasts `newPendingWalletConnectProposalRequest`,
+   and opens the request surface. `proposalDecisions.ts` handles the trusted-UI
+   `walletConnectGetPendingProposals` / `walletConnectApproveProposal` /
+   `walletConnectRejectProposal` routes. It is built by
+   `createWalletConnectProposalDecisionHandlers` so `sessionCommands.ts` injects
+   `ensureWalletKit` and the broadcasts (no SDK import side effects). Connect
+   re-reads the active account, requires `isSessionAccount`, removes the record,
+   re-reads the authoritative proposal from the WalletKit store, then runs
+   `approveWalletConnectProposalForAccount` (the unchanged Safe-eligibility and
+   `buildApprovedNamespaces` policy). Reject answers 5000 "User rejected" and
+   broadcasts `walletConnectProposalUserRejected`. Dependency direction:
+   `client.ts` → `proposalIntake.ts` → `proposalStorage.ts`;
+   `proposalDecisions.ts` → `sessionProposal.ts`/`proposalStorage.ts` (never
+   `client.ts`); `sessionCommands.ts` binds the decisions to the client as
+   `walletConnectProposalCommands`. The SDK `proposal_expire` listener and WalletConnect reset
+   clear pending records.
 6. `keepalive.ts`, `reset.ts` — relay liveness and replacement-wallet SDK
    namespace teardown. Hosts that freeze the worker (the Android app in
    `apps/android`) dispatch `walletchan:relay-nudge` on the worker global when

@@ -21,6 +21,7 @@ export type PendingRequestFamily =
   | "signature"
   | "batchTransaction"
   | "dappConnection"
+  | "sessionProposal"
   | "addChain"
   | "watchAsset"
   | "crossDappBatch"

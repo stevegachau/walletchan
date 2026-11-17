@@ -93,6 +93,10 @@ const pureModules = [
     url: new URL("TransactionDetails/formatting.ts", componentsUrl),
   },
   {
+    path: "components/WalletConnectProposal/proposalPresentation.ts",
+    url: new URL("WalletConnectProposal/proposalPresentation.ts", componentsUrl),
+  },
+  {
     path: "components/Transfer/formatting.ts",
     url: new URL("Transfer/formatting.ts", componentsUrl),
   },

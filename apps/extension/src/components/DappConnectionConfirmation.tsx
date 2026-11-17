@@ -1,12 +1,11 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Box, Button, Flex, Heading, HStack, Icon, Text, VStack } from "@chakra-ui/react";
+import { useEffect, useMemo, useState } from "react";
+import { Button, Text, VStack } from "@chakra-ui/react";
 import type { Account } from "@/chrome/types";
 import type { PendingDappConnectionRequest } from "@/chrome/requests/dappPermissionStorage";
 import DappConnectionAccountSelector from "@/components/DappConnectionAccountSelector";
 import { ConfirmationScreen } from "@/components/ui";
 import { googleFaviconUrl } from "@/constants/externalUrls";
 import { useDappOriginFormatter } from "@/hooks/useDappOriginDisplay";
-import DappSiteIcon from "@/components/DappSiteIcon";
 import DisplayModeMenu from "@/components/DisplayModeMenu";
 import { playInteractionSound } from "@/sounds/soundManager";
 import { contenthashHistoryLabel } from "@/components/DappConnection/contenthashHistoryModel";
@@ -14,6 +13,8 @@ import { useEnsContenthashLastUpdated } from "@/components/DappConnection/useEns
 import { useDappConnectionReputation } from "@/components/DappConnection/useDappConnectionReputation";
 import { DappConnectionReputationNotice } from "@/components/DappConnection/DappConnectionReputationNotice";
 import { buildDappReputationPresentation } from "@/components/DappConnection/reputationPresentation";
+import { ConnectionPermissionList } from "@/components/DappConnection/ConnectionPermissionList";
+import { ConnectionRequestHeader } from "@/components/DappConnection/ConnectionRequestHeader";
 
 interface DappConnectionConfirmationProps {
   request: PendingDappConnectionRequest;
@@ -26,71 +27,6 @@ interface DappConnectionConfirmationProps {
   onToggleSidePanel: () => void;
   onOpenFullscreen: () => void;
   onFinished: () => void;
-}
-
-const permissionIconProps = {
-  boxSize: "18px",
-  viewBox: "0 0 24 24",
-  fill: "none",
-  stroke: "currentColor",
-  strokeWidth: "2",
-  strokeLinecap: "round" as const,
-  strokeLinejoin: "round" as const,
-};
-
-function AddressPermissionIcon() {
-  return (
-    <Icon {...permissionIconProps} aria-hidden="true">
-      <path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0" />
-      <circle cx="12" cy="12" r="3" />
-    </Icon>
-  );
-}
-
-function RequestPermissionIcon() {
-  return (
-    <Icon {...permissionIconProps} aria-hidden="true">
-      <path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z" />
-      <path d="m21.854 2.147-10.94 10.939" />
-    </Icon>
-  );
-}
-
-function PrivatePermissionIcon() {
-  return (
-    <Icon {...permissionIconProps} aria-hidden="true">
-      <circle cx="12" cy="16" r="1" />
-      <rect x="3" y="10" width="18" height="12" rx="2" />
-      <path d="M7 10V7a5 5 0 0 1 10 0v3" />
-    </Icon>
-  );
-}
-
-function PermissionRow({
-  icon,
-  children,
-  fontSize = "sm",
-}: {
-  icon: ReactNode;
-  children: ReactNode;
-  fontSize?: "xs" | "sm";
-}) {
-  return (
-    <HStack align="center" spacing={2.5} minH="28px">
-      <Flex
-        boxSize="24px"
-        align="center"
-        justify="center"
-        flexShrink={0}
-        color="accent.secondary"
-      >
-        {icon}
-      </Flex>
-      <Text color="fg.secondary" fontSize={fontSize} lineHeight="1.45">
-        {children}
-      </Text>
-    </HStack>
-  );
 }
 
 export default function DappConnectionConfirmation({
@@ -166,60 +102,35 @@ export default function DappConnectionConfirmation({
         />
       }
       outcome={
-        <VStack
-          as="section"
-          aria-labelledby="dapp-connection-site"
-          align="center"
-          spacing={3}
-          px={2}
-          pt={2}
-          textAlign="center"
+        <ConnectionRequestHeader
+          headingId="dapp-connection-site"
+          eyebrow="Connection request"
+          label={displayOrigin.label}
+          iconSrc={displayOrigin.faviconSrc || favicon}
+          iconFallbackSrc={displayOrigin.faviconFallbackSrc}
         >
-          <DappSiteIcon
-            src={displayOrigin.faviconSrc || favicon}
-            fallbackSrc={displayOrigin.faviconFallbackSrc}
-            label={displayOrigin.label}
-            size="64px"
-            imageSize="44px"
-          />
-          <VStack align="center" spacing={1} minW={0} w="full">
-            <Text color="fg.secondary" fontSize="xs" fontWeight="600">
-              Connection request
-            </Text>
-            <Heading
-              as="h2"
-              id="dapp-connection-site"
-              color="fg.primary"
-              fontSize="2xl"
-              lineHeight="1.2"
+          {contenthashLabel && (
+            <Text
+              as="span"
+              role="status"
+              aria-live="polite"
               maxW="full"
-              overflowWrap="anywhere"
+              px={2}
+              py={1}
+              borderWidth="1px"
+              borderColor="border.subtle"
+              borderRadius="full"
+              bg="surface.raisedHover"
+              color="fg.secondary"
+              fontSize="xs"
+              fontWeight="500"
+              lineHeight="1.35"
+              sx={{ fontVariantNumeric: "tabular-nums" }}
             >
-              {displayOrigin.label}
-            </Heading>
-            {contenthashLabel && (
-              <Text
-                as="span"
-                role="status"
-                aria-live="polite"
-                maxW="full"
-                px={2}
-                py={1}
-                borderWidth="1px"
-                borderColor="border.subtle"
-                borderRadius="full"
-                bg="surface.raisedHover"
-                color="fg.secondary"
-                fontSize="xs"
-                fontWeight="500"
-                lineHeight="1.35"
-                sx={{ fontVariantNumeric: "tabular-nums" }}
-              >
-                {contenthashLabel}
-              </Text>
-            )}
-          </VStack>
-        </VStack>
+              {contenthashLabel}
+            </Text>
+          )}
+        </ConnectionRequestHeader>
       }
       contextTitle="Connecting as"
       context={
@@ -237,26 +148,7 @@ export default function DappConnectionConfirmation({
             chainId={request.chainId}
           />
 
-          <VStack as="section" aria-label="Site permissions" align="stretch" spacing={3} px={1}>
-            <Text color="fg.primary" fontSize="sm" fontWeight="600">
-              This site can
-            </Text>
-            <PermissionRow icon={<AddressPermissionIcon />}>
-              See this account address
-            </PermissionRow>
-            <PermissionRow icon={<RequestPermissionIcon />}>
-              {account.type === "safe"
-                ? "Request Safe transaction proposals (message signing is unavailable)"
-                : "Request transactions and signatures"}
-            </PermissionRow>
-            <Box pt={3}>
-              <PermissionRow icon={<PrivatePermissionIcon />} fontSize="xs">
-                {account.type === "safe"
-                  ? "Owner keys stay private. Proposals and execution are separate approvals."
-                  : "Keys stay private. You approve every request."}
-              </PermissionRow>
-            </Box>
-          </VStack>
+          <ConnectionPermissionList accountType={account.type} />
 
         </VStack>
       }

@@ -2269,7 +2269,10 @@ src/
 │   ├── walletConnect/       # WalletConnect relay audit domain (see README.md)
 │   │   ├── client.ts        # SDK lifecycle, listeners, generation, reset cutover
 │   │   ├── sessionCommands.ts # Trusted-UI list/pair/disconnect/chain commands
-│   │   ├── sessionProposal.ts # Signing-account namespace approval policy
+│   │   ├── proposalIntake.ts # Proposal intake: record + surface, never approves
+│   │   ├── sessionProposal.ts # Approval namespace policy (after explicit Connect)
+│   │   ├── proposalStorage.ts # Bounded walletConnectPendingProposals review queue
+│   │   ├── proposalDecisions.ts # Trusted-UI Connect/Reject (injected SDK deps)
 │   │   ├── requestRouter.ts # Claimed, validated session-request dispatch
 │   │   ├── pendingRequests.ts # Pinned tx/signature confirmation prompts
 │   │   ├── batchRequests.ts # ERC-5792 request adapters
@@ -3033,13 +3036,34 @@ WalletConnect support is a parallel dapp transport for sites that do not list Wa
 1. Popup → More → WalletConnect.
 2. User pastes a `wc:` URI from the dapp.
 3. Background `walletConnectPair` pairs through `@reown/walletkit`.
-4. The service worker auto-approves the session for the current active signing account and visible chains.
-5. Active sessions render on `WalletConnectView`. While any session exists, the home screen shows `WalletConnectBanner` below the pending-request banner.
+4. On `session_proposal` the service worker does **not** approve. It records a
+   sanitized pending proposal in `walletConnectPendingProposals`, broadcasts
+   `newPendingWalletConnectProposalRequest { proposal }`, and opens the request
+   surface (`openExtensionPopup`), exactly like pending tx/signature requests.
+5. The wallet UI shows the "Connect app" review
+   (`components/WalletConnectProposal/`): dapp icon/name/url, a WalletConnect
+   Verify badge (verified / unverified / domain mismatch / known scam; the
+   last two are errors that need an explicit acknowledgement), requested
+   networks, the account picker shared with injected-site connections, and
+   Reject / Connect. Like the injected-site review it is shown only when the
+   wallet is unlocked (locked → unlock screen → review); the decision itself
+   needs no secret.
+6. Connect sends `walletConnectApproveProposal { proposalId, accountId }`;
+   the background re-reads the active account (it must equal `accountId`),
+   requires `isSessionAccount`, removes the record first-action-wins, re-reads
+   the proposal from the WalletKit store, and applies the unchanged
+   Safe-eligibility + `buildApprovedNamespaces` policy before `approveSession`.
+   Any failure rejects the proposal and broadcasts `walletConnectProposalRejected`.
+   Reject sends `walletConnectRejectProposal { proposalId }` →
+   `rejectSession` code 5000 "User rejected" and a
+   `walletConnectProposalUserRejected { proposalId, name, url }` broadcast.
+   Unknown or expired ids fail closed (`code: "notFound" | "expired"`).
+7. Active sessions render on `WalletConnectView`. While any session exists, the home screen shows `WalletConnectBanner` below the pending-request banner.
 
 **Background modules:**
 
 - `walletConnect/client.ts` owns WalletKit initialization, generation-bound SDK listeners, relay recovery, and reset cutover. `sessionCommands.ts` exposes the four UI-only list/pair/disconnect/switch operations; `resultBridge.ts` delivers final `txResult:*`, `sigResult:*`, and `erc7715PermissionResult:*` values without creating another signing path.
-- `walletConnect/proposal.ts` normalizes and bounds proposal metadata. `sessionProposal.ts` applies signing-account and visible-chain namespace policy before approval. Proposals with no approvable namespace are rejected and a sanitized `walletConnectProposalRejected` summary is broadcast for the UI.
+- `walletConnect/proposal.ts` normalizes and bounds proposal metadata and the requested chain/method summary. `proposalIntake.ts` records arriving proposals (never approving them); `sessionProposal.ts` holds `approveWalletConnectProposalForAccount`, the signing-account and visible-chain namespace policy that runs only after an explicit Connect. `proposalStorage.ts` owns the bounded (10 entries, ≤15 min) `walletConnectPendingProposals` queue with atomic first-wins removal; `proposalDecisions.ts` owns the trusted-UI `walletConnectGetPendingProposals` / `walletConnectApproveProposal` / `walletConnectRejectProposal` handlers, built by a factory that `sessionCommands.ts` binds to `ensureWalletKit` and the broadcasts (`walletConnectProposalCommands`). The router wraps decisions in the `sessionProposal` pending-resolution claim, so reset and double clicks are mutually exclusive with a decision. Proposals with no approvable namespace are rejected and a sanitized `walletConnectProposalRejected` summary is broadcast for the UI. The SDK `proposal_expire` event and WalletConnect reset clear pending records.
 - `walletConnect/requestRouter.ts` claims and validates every `session_request` before dispatch. `pendingRequests.ts` alone creates pinned transaction/signature confirmation records, keeping account binding and popup effects out of the method router. Duplicate in-flight requests receive `-32002`; stored terminal results replay exactly.
 - `walletConnect/batchRequests.ts` adapts ERC-5792 methods to `batchTxHandlers.ts`; `rpcRequests.ts` owns chain mutation and allowlisted bounded read-only RPC forwarding.
 - `walletConnect/protocol.ts` persists the first terminal JSON-RPC response before relay delivery. `outbox.ts` replays retained terminal responses and removes them only after successful delivery or confirmed session absence. `sessionPolicy.ts` owns CAIP/account/method rules and sanitized bounded peer metadata.
@@ -6552,8 +6576,9 @@ audience and external-provider validation gates. The router passes the exact
 Chrome sender into origin/tab-bound domain handlers; result persistence,
 pending-request claims, popup/badge effects, and permission broadcasts remain
 in those handlers. `background/walletConnectSessionRouter.ts` separately
-forwards the four trusted-UI WalletConnect list/pair/disconnect/chain-selection
-routes to injected SDK handlers, avoiding relay SDK initialization when the
+forwards the trusted-UI WalletConnect list/pair/disconnect/chain-selection
+routes and the pending-proposal list/approve/reject routes to injected SDK
+handlers, avoiding relay SDK initialization when the
 router is imported in isolation.
 
 Injected read-only RPC transport is delegated separately to
@@ -6727,6 +6752,9 @@ notification clicks. The focused callback implementations remain under
 | `getSeedGroups`                    | Get all seed group metadata                                                                     |
 | `renameSeedGroup`                  | Rename a seed group (broadcasts accountsUpdated)                                                |
 | `initiateTransfer`                 | Create pending tx for extension-initiated token transfer                                        |
+| `walletConnectGetPendingProposals` | List unexpired WalletConnect session proposals awaiting review (wallet-UI only)                 |
+| `walletConnectApproveProposal`     | `{ proposalId, accountId? }` — explicit Connect; first-action-wins; re-checks the active account (wallet-UI only) |
+| `walletConnectRejectProposal`      | `{ proposalId }` — explicit Reject; relay gets 5000 "User rejected" (wallet-UI only)            |
 | `GET_CLEAR_SIGNING_DESCRIPTOR`     | Resolve an ERC-7730 descriptor for `{ chainId, address, kind }`, optionally disambiguated by calldata `selector` or EIP-712 `formatKey`. Public metadata only; no credentials. |
 
 ### Background → Views (chrome.runtime broadcast)
@@ -6736,6 +6764,9 @@ notification clicks. The focused callback implementations remain under
 | `txHistoryUpdated`           | Notifies views with compact `txId`, `ownerAddress`, `chainId`, and optional `changedKeys`; no transaction or transfer payload is broadcast. |
 | `newPendingTxRequest`        | Notifies views of new pending transaction       |
 | `newPendingSignatureRequest` | Notifies views of new pending signature request |
+| `newPendingWalletConnectProposalRequest` | `{ proposal }` — a WalletConnect session proposal awaits Connect/Reject (sanitized `PendingWalletConnectProposal`). The Android shell keys off `/^newPending[A-Za-z]*Request$/`. |
+| `walletConnectProposalRejected` | `{ rejection }` — a proposal could not be approved (no approvable namespace, ineligible account); sanitized metadata only. |
+| `walletConnectProposalUserRejected` | `{ proposalId, name, url }` — the user rejected a proposal in the review (relay answered 5000 "User rejected"). Distinct from `walletConnectProposalRejected` so policy-failure notices are not shown for a deliberate rejection. |
 | `accountsUpdated`            | Notifies views that accounts list changed       |
 | `addressContactsUpdated`     | Notifies views that the ordered contact list changed |
 | `walletLockedExternal`       | Force-lock signal (password rotation, agent removal, manual lock) — all surfaces route to unlock screen. Manual lock adds `suppressPasskeyAutoPrompt: true` so only already-open surfaces skip their automatic biometric prompt. |

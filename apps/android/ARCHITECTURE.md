@@ -64,8 +64,12 @@ same code can be tested at `http://localhost:<port>/` in desktop Chromium.
   mode in settings, approvals open as overlay windows with the same return
   behaviour. Window 1 is the phone "browser window" holding the dApp tab (or a
   synthetic New Tab, id 1).
-- WalletConnect pairing needs no unlock (public addresses only); signing
-  requests ask for the password in the wallet UI.
+- WalletConnect pairing needs no unlock, but a session is never approved
+  automatically: the background records the proposal and broadcasts
+  `newPendingWalletConnectProposalRequest`, which the wallet UI shows as a
+  "Connect app" review (after the unlock screen when locked, like an
+  injected-site connection). Signing requests ask for the password in the
+  wallet UI.
 
 ## Native bridge (main WebView)  — name: `WalletChanNative`
 
@@ -262,7 +266,8 @@ Behaviour:
 
 The extension already implements WalletConnect (WalletKit in the background;
 UI sends `{type:"walletConnectPair", uri}`; proposals/requests surface as
-approval windows). Mobile additions:
+approval windows; a session proposal becomes the "Connect app" review, which
+the user must Connect or Reject). Mobile additions:
 
 - JS → native `{cmd:"scanQr"}`: native opens a camera QR scanner (CAMERA runtime
   permission; ZXing embedded, no Play Services dependency) and replies to the
@@ -273,6 +278,17 @@ approval windows). Mobile additions:
   shell pairs it through the trusted wallet-UI path (sender must look like
   `/index.html`, frameId 0), brings the wallet to front (native `showWallet`),
   and shows progress/errors (e.g. navigate UI to the WalletConnect view or a toast).
+  After pairing the shell waits for the decision: the "Connecting…" toast is
+  hidden while the review is on screen and the wait extends to the proposal's
+  expiry (≤10 min); "Waiting for the dApp…" is shown only if no proposal
+  arrived within 45 s. Outcomes: `walletConnectSessionsChanged` with a new
+  topic → "Connected to X"; `walletConnectProposalUserRejected` → neutral
+  "Connection rejected"; `walletConnectProposalRejected` → error toast (no
+  return, so it can be read). For links from another app (deep link,
+  `walletchan://wc?uri=`, or a pasted link in the WalletConnect screen) the
+  shell returns to the caller exactly once after Connect or Reject; the
+  home-screen inline-request tracker does not also return for a review owned
+  by a pairing.
 - Native registers intent filters for scheme `wc` and `walletchan` (VIEW,
   BROWSABLE, DEFAULT) so a dApp in the phone's browser can hand off "Open in
   wallet"; deep links received before shell `hello` are queued.

@@ -1,16 +1,11 @@
-/** Session proposal policy and approval/rejection effects. */
+/** Namespace approval policy; runs only after an explicit Connect (`proposalDecisions.ts`). */
 
 import { buildApprovedNamespaces } from "@walletconnect/utils";
 import { getStoredNetworksInfo, getVisibleChains } from "@/lib/chains";
-import type { WalletConnectProposalRejection } from "@/types/walletConnect";
-import { getActiveAccount } from "../accountStorage";
-import {
-  WALLETCONNECT_SUPPORTED_EVENTS,
-} from "./sessionPolicy";
-import {
-  getWalletConnectMethodsForAccount,
-  isSessionAccount,
-} from "./sessionAccountPolicy";
+import type { WalletConnectProposalDecisionResult, WalletConnectProposalRejection } from "@/types/walletConnect";
+import type { Account } from "../types";
+import { WALLETCONNECT_SUPPORTED_EVENTS } from "./sessionPolicy";
+import { getWalletConnectMethodsForAccount, isSessionAccount } from "./sessionAccountPolicy";
 import { getSafeAccountRecord } from "../safe/accountRepository";
 import { requireSafeFeature } from "../safe/featurePolicy";
 import {
@@ -20,19 +15,18 @@ import {
   type WalletConnectSupportedNamespaces,
 } from "./proposal";
 
-export async function handleWalletConnectSessionProposal(
+/** Approves `proposal` for `account` or rejects it; the caller claimed the user's decision. */
+export async function approveWalletConnectProposalForAccount(
   kit: any,
   proposal: any,
+  account: Account | null,
   onSessionsChanged: () => Promise<void>,
   onProposalRejected: (rejection: WalletConnectProposalRejection) => void,
-): Promise<void> {
-  const account = await getActiveAccount();
+): Promise<WalletConnectProposalDecisionResult> {
   if (!isSessionAccount(account)) {
-    await kit.rejectSession({
-      id: proposal.id,
-      reason: { code: 4001, message: "No signing account is active" },
-    });
-    return;
+    const reason = { code: 4001, message: "No signing account is active" };
+    await kit.rejectSession({ id: proposal.id, reason }).catch(() => undefined);
+    return { success: false, code: "rejected", error: reason.message };
   }
 
   try {
@@ -72,6 +66,7 @@ export async function handleWalletConnectSessionProposal(
 
     await kit.approveSession({ id: proposal.id, namespaces });
     void onSessionsChanged();
+    return { success: true };
   } catch (error) {
     const rejection = await buildProposalRejection(
       proposal,
@@ -79,9 +74,9 @@ export async function handleWalletConnectSessionProposal(
       error,
     );
     onProposalRejected(rejection);
-    await kit.rejectSession({
-      id: proposal.id,
-      reason: { code: 5000, message: rejection.error },
-    });
+    await kit
+      .rejectSession({ id: proposal.id, reason: { code: 5000, message: rejection.error } })
+      .catch(() => undefined);
+    return { success: false, code: "rejected", error: rejection.error, rejection };
   }
 }

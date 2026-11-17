@@ -655,18 +655,35 @@ WalletConnect lets dapps that do not discover WalletChan through ERC-6963 send r
 | Handler | Effect | Guard |
 | --- | --- | --- |
 | `walletConnectGetSessions` | Extension UI reads active WalletConnect session summaries. No secrets; includes dapp metadata, approved chains, and approved accounts. | `wallet-ui` audience policy |
-| `walletConnectPair` | Extension UI pairs with a `wc:` URI. The service worker auto-approves only for the current active signing account and visible chains. | `wallet-ui` audience policy |
+| `walletConnectPair` | Extension UI pairs with a `wc:` URI. Pairing never approves a session: the resulting `session_proposal` is recorded in `walletConnectPendingProposals` and surfaced for an explicit decision. | `wallet-ui` audience policy |
+| `walletConnectGetPendingProposals` | Extension UI lists unexpired pending session proposals (sanitized proposer metadata, chain/method summary, WalletConnect Verify verdict). No secrets. | `wallet-ui` audience policy |
+| `walletConnectApproveProposal` | User chose Connect. Re-reads the then-active account (and fails closed with `accountChanged` if it differs from the `accountId` the UI displayed), requires `isSessionAccount`, atomically removes the pending record, re-reads the authoritative proposal from the WalletKit store, then applies the unchanged Safe-eligibility/`buildApprovedNamespaces` policy and `approveSession`. Any failure rejects the proposal and broadcasts `walletConnectProposalRejected`. Exposes public addresses only, so it works locked or unlocked. | `wallet-ui` audience policy + `sessionProposal` first-action-wins claim + atomic record removal |
+| `walletConnectRejectProposal` | User chose Reject. Atomically removes the record, answers the relay with `rejectSession` code 5000 "User rejected", and broadcasts `walletConnectProposalUserRejected` (`proposalId`, sanitized name/url). | `wallet-ui` audience policy + `sessionProposal` first-action-wins claim + atomic record removal |
 | `walletConnectDisconnectSession` | Extension UI disconnects an active WalletConnect session by topic. | `wallet-ui` audience policy |
 | `walletConnectSwitchChain` | Extension UI updates the shared WalletConnect active chain and emits `chainChanged` to active WC sessions that support the chain. | `wallet-ui` audience policy |
 
 WalletConnect implementation lives in the `chrome/walletConnect/` audit domain,
 not in `background.ts`. `client.ts` owns only SDK lifecycle/listeners;
-`sessionProposal.ts` approves namespaces only for an active signing account;
+`proposalIntake.ts` records proposals for review and `sessionProposal.ts`,
+only after an explicit Connect, approves namespaces for an active signing account (`proposalDecisions.ts`
+owns the UI decisions; `proposalStorage.ts` the bounded review queue);
 `requestRouter.ts` claims and validates relay requests before dispatch;
 `pendingRequests.ts`, `batchRequests.ts`, and `rpcRequests.ts` adapt requests to
 the existing wallet boundaries. Approved accounts derive from the active
-account at pairing time and its visible chains; Bankr accounts expose only
-Bankr-supported chains.
+account at the moment the user taps Connect and its visible chains; Bankr
+accounts expose only Bankr-supported chains.
+
+Session proposals are never auto-approved. `walletConnectPendingProposals`
+holds at most 10 unexpired, display-only records (expiry from the proposal's
+`expiryTimestamp`, capped at 15 minutes); malformed rows are dropped, an
+over-capacity or already-expired arrival is rejected, and a relay replay of the
+same proposal id is not queued twice. The record never authorizes anything:
+approval re-reads the proposal from the WalletKit store and fails closed as
+expired if it is gone. WalletConnect Verify `INVALID` (domain mismatch) and
+`isScam` verdicts are shown as errors and require an explicit acknowledgement
+before Connect; Reject is always available. The connection review, like the
+injected-site connection review, is shown only after unlock, although the
+background decision itself needs no secret.
 
 Chainless `eip155` proposal namespaces are filled with that same visible chain set before approval, because some dapps request EVM methods without listing chains. If normalization still leaves no approvable namespace, the proposal is rejected rather than approved with an empty namespace. The rejection broadcast (`walletConnectProposalRejected`) contains only bounded/sanitized dapp metadata, capped requested chain IDs/methods, and known public chain metadata used to render the chain notice and prefill Add Chain; it contains no secrets or session request payloads. Unsafe peer URL/icon schemes and overlong metadata are discarded before storage or UI rendering.
 
@@ -1626,6 +1643,7 @@ accessible resources.
 | `pendingDappConnectionRequests` | No          | Short-lived top-level `eth_requestAccounts` confirmations. Contains origin/tab/frame and public site metadata only; results use `dappConnectionResult:{id}`. |
 | `walletConnectPendingRequests` | No           | Bounded WalletConnect request claims/routes plus committed terminal JSON-RPC response metadata (`internal id → session topic/request id`). Never contains private keys, seed phrases, vault keys, or passwords. |
 | `walletConnectChainId`    | No               | WalletConnect-specific active chain ID |
+| `walletConnectPendingProposals` | No        | Bounded (≤10, ≤15 min) WalletConnect session proposals awaiting Connect/Reject: proposal id, pairing topic, sanitized proposer name/url/icons/description, requested chain IDs/methods, Verify verdict, timestamps. Display-only; approval re-reads the WalletKit store. Wallet-reset manifest and WalletConnect reset clear it. |
 | `walletConnectStorageNamespace` | No          | WalletConnect SDK identity epoch. Reset rotates and retains it so a replacement wallet cannot reopen the previous SDK store. |
 | `sponsoredTransferIntents` | Yes (encrypted payload) | Bounded ERC-3009 recovery records. The exact signed authorization/nonce is encrypted by the general vault key; unresolved and unacknowledged terminal records survive local-clock expiry until finalized Base state or trusted-UI acknowledgment resolves them. |
 | `crossDappBatch`           | No               | User-assembled cross-dapp batch (Bankr or PK/SP EIP-7702). Single batch, locked to first entry's pinned account, `from`, and `chainId`. The original pending entries are removed when added; the dapp promises stay open until ship/reject and are resolved via `txResult:{txId}` or `bundleStatuses` fan-out. |

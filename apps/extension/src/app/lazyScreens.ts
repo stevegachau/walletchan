@@ -15,6 +15,9 @@ export const Erc7715PermissionConfirmation = lazy(
 export const DappConnectionConfirmation = lazy(
   () => import("@/components/DappConnectionConfirmation"),
 );
+export const WalletConnectProposalConfirmation = lazy(
+  () => import("@/components/WalletConnectProposal/WalletConnectProposalConfirmation"),
+);
 export const PendingTxList = lazy(() => import("@/components/PendingTxList"));
 export const BatchTransactionConfirmation = lazy(
   () => import("@/components/BatchTransactionConfirmation"),
@@ -105,6 +108,7 @@ if (typeof window !== "undefined") {
     void import("@/components/SignatureRequestConfirmation");
     void import("@/components/Erc7715PermissionConfirmation");
     void import("@/components/PendingTxList");
+    void import("@/components/WalletConnectProposal/WalletConnectProposalConfirmation");
     void import("@/components/BatchTransactionConfirmation");
     void import("@/components/CrossDappBatchConfirmation");
     void import("@/components/Chat/ChatView");
