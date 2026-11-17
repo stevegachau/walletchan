@@ -141,6 +141,91 @@
       #wc-toast[data-kind="success"] {
         background: #067647;
       }
+      /* Biometric unlock controls, shown over the wallet's unlock screen. */
+      #wc-bio {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 28px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+        z-index: 6;
+        pointer-events: none;
+      }
+      #wc-bio[hidden],
+      #wc-bio [hidden],
+      #wc-bio-offer[hidden] {
+        display: none;
+      }
+      #wc-bio > * {
+        pointer-events: auto;
+      }
+      .wc-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        padding: 12px 20px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        background: var(--wc-fab-bg);
+        color: var(--wc-fab-fg);
+        font: 600 15px/1 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+        cursor: pointer;
+      }
+      .wc-pill svg {
+        width: 22px;
+        height: 22px;
+      }
+      .wc-link {
+        background: none;
+        border: 0;
+        padding: 6px 10px;
+        color: rgba(255, 255, 255, 0.6);
+        font: 500 13px/1.2 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        text-decoration: underline;
+        cursor: pointer;
+      }
+      #wc-bio-offer {
+        position: absolute;
+        left: 16px;
+        right: 16px;
+        top: 64px; /* top, so it never covers a request's Reject/Confirm bar */
+        z-index: 100001;
+        padding: 16px;
+        border-radius: 14px;
+        background: var(--wc-toast-bg);
+        color: var(--wc-toast-fg);
+        box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+        font: 500 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
+      #wc-bio-offer strong {
+        display: block;
+        font-size: 16px;
+        margin-bottom: 4px;
+      }
+      #wc-bio-offer .wc-row {
+        display: flex;
+        gap: 10px;
+        justify-content: flex-end;
+        margin-top: 12px;
+      }
+      #wc-bio-offer button {
+        padding: 10px 16px;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        background: transparent;
+        color: inherit;
+        font: 600 14px/1 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        cursor: pointer;
+      }
+      #wc-bio-offer button.primary {
+        background: #f59e0b;
+        border-color: #f59e0b;
+        color: #111;
+      }
     </style>
   </head>
   <body>
@@ -160,6 +245,19 @@
             <path d="M8 12h8" />
           </svg>
         </button>
+      </div>
+      <div id="wc-bio" hidden>
+        <button id="wc-bio-unlock" class="wc-pill" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 11v3a8 8 0 0 1-1.2 4.2M8.5 12a3.5 3.5 0 0 1 7 0v1.5a12 12 0 0 1-.8 4.3M5.5 15.5A10 10 0 0 0 6 12a6 6 0 0 1 9.5-4.9M18 9.5a6 6 0 0 1 .5 2.5v1a15 15 0 0 1-.4 3.4"/></svg><span>Unlock with fingerprint</span></button>
+        <button id="wc-bio-setup" class="wc-link" type="button">Set up fingerprint unlock</button>
+        <button id="wc-bio-off" class="wc-link" type="button">Turn off fingerprint unlock</button>
+      </div>
+      <div id="wc-bio-offer" role="dialog" aria-labelledby="wc-bio-offer-title" hidden>
+        <strong id="wc-bio-offer-title">Unlock faster next time?</strong>
+        Use your fingerprint or face instead of typing your password. Your password is stored encrypted in the phone's secure hardware and only released after a biometric check.
+        <div class="wc-row">
+          <button id="wc-bio-offer-no" type="button">Not now</button>
+          <button id="wc-bio-offer-yes" class="primary" type="button">Enable</button>
+        </div>
       </div>
       <div id="wc-toast" role="status" aria-live="polite"></div>
       <div id="wc-hidden"></div>

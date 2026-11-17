@@ -1030,11 +1030,12 @@
       if (dappTab) nativePost({ cmd: "showDapp" });
       return;
     }
-    // "external": let the approval close visibly, then step aside so Android
-    // shows the app that opened us (moveTaskToBack).
+    // "external": step aside right away so Android shows the app that opened
+    // us (moveTaskToBack). Speed matters more than lingering on the wallet;
+    // the dApp shows the result itself.
     setTimeout(() => {
       if (!topOverlay()) nativePost({ cmd: "backUnhandled" });
-    }, 600);
+    }, 80);
   }
 
   // ---------------------------------------------------------------------------
@@ -1824,7 +1825,7 @@
       hideToast();
       return;
     }
-    if (returnTo) setTimeout(() => returnToCaller(returnTo), 1200);
+    if (returnTo) setTimeout(() => returnToCaller(returnTo), 300);
   }
 
   const PROPOSAL_ARRIVAL_TIMEOUT_MS = 45_000;
@@ -2006,6 +2007,17 @@
         // Back from another app: fetch queued WalletConnect requests now
         // instead of on the next 20 s keepalive tick.
         nudgeRelay();
+        appVisible = true;
+        bioAutoPrompted = false; // a prompt cancelled by leaving the app may show again
+        break;
+      case "appPaused":
+        appVisible = false;
+        break;
+      case "biometricStatus":
+      case "biometricEnroll":
+      case "biometricUnlock":
+      case "biometricDisable":
+        onBioReply(msg);
         break;
       case "http": {
         const pending = pendingHttp.get(msg.id);
@@ -2082,10 +2094,256 @@
     }
   }
 
+  /** A Chakra toast is showing in the wallet UI (FABs would cover it). */
+  function uiToastVisible() {
+    if (!mainUiFrame) return false;
+    try {
+      const doc = mainUiFrame.contentDocument;
+      return Boolean(doc && doc.querySelector('[id^="chakra-toast-manager"] li'));
+    } catch {
+      return false;
+    }
+  }
+
   function updateChrome() {
     const fabs = document.getElementById("wc-fabs");
-    if (fabs) fabs.hidden = overlayWindows.size > 0 || !uiOnHomeScreen();
+    if (fabs) fabs.hidden = overlayWindows.size > 0 || !uiOnHomeScreen() || uiToastVisible();
     checkInlineRequestDone();
+    bioTick();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Biometric unlock (opt-in). Native keeps the password encrypted under a
+  // Keystore key usable only after a fingerprint/face check (see
+  // ARCHITECTURE.md "Biometric unlock"); the shell fills the wallet's own
+  // unlock form with it. The password only passes through memory.
+  // ---------------------------------------------------------------------------
+
+  const bio = { available: false, enrolled: false, declined: false, wantSetup: false, prompting: false };
+  const bioPending = new Map();
+  let bioNextId = 1;
+  let bioCapture = null; // { secret, at, viaBiometric } — last password typed into the unlock form
+  let bioFilledAt = 0;
+  let bioAutoPrompted = false; // auto-prompt once per appearance of the unlock screen
+  let unlockScreenShown = false;
+  let appVisible = true;
+  const bioWatchedDocs = new WeakSet();
+  const UNLOCK_INPUT = "input#unlock-password"; // UnlockView.tsx
+
+  function bioRequest(cmd, extra) {
+    return new Promise((resolve) => {
+      const id = "bio" + bioNextId++;
+      bioPending.set(id, resolve);
+      if (!nativePost(Object.assign({ cmd, id }, extra || {}))) {
+        bioPending.delete(id);
+        resolve({ ok: false, error: "unavailable", available: false });
+        return;
+      }
+      const limit = cmd === "biometricStatus" || cmd === "biometricDisable" ? 5000 : 180_000;
+      setTimeout(() => {
+        if (bioPending.delete(id)) resolve({ ok: false, error: "timeout" });
+      }, limit);
+    });
+  }
+
+  function onBioReply(msg) {
+    const resolve = bioPending.get(msg.id);
+    if (!resolve) return;
+    bioPending.delete(msg.id);
+    resolve(msg);
+  }
+
+  async function refreshBioStatus() {
+    const status = await bioRequest("biometricStatus");
+    bio.available = status.available === true;
+    bio.enrolled = status.enrolled === true;
+  }
+
+  function persistBioDeclined(value) {
+    bio.declined = value;
+    meta.set("bioDeclined", JSON.stringify(value));
+    persist("meta", [["bioDeclined", JSON.stringify(value)]], []).catch(() => {});
+  }
+
+  /** The wallet's unlock form (topmost surface first), if one is visible. */
+  function findUnlockForm() {
+    const overlays = [...overlayWindows.values()].sort((a, b) => b.zIndex - a.zIndex).map((o) => o.frame);
+    for (const frame of [...overlays, mainUiFrame]) {
+      if (!frame) continue;
+      let doc;
+      try {
+        doc = frame.contentDocument;
+      } catch {
+        continue;
+      }
+      const input = doc && doc.querySelector(UNLOCK_INPUT);
+      if (!input || !isVisible(input)) continue;
+      const button = [...doc.querySelectorAll("button")].find((b) => b.textContent.trim() === "Unlock" && isVisible(b));
+      return { frame, doc, input, button };
+    }
+    return null;
+  }
+
+  /** Remember what the user typed when they submit the unlock form. */
+  function watchUnlockForm(form) {
+    if (bioWatchedDocs.has(form.doc)) return;
+    bioWatchedDocs.add(form.doc);
+    const capture = () => {
+      const input = form.doc.querySelector(UNLOCK_INPUT);
+      const secret = input && input.value;
+      if (secret) bioCapture = { secret, at: Date.now(), viaBiometric: Date.now() - bioFilledAt < 3000 };
+    };
+    form.doc.addEventListener(
+      "click",
+      (event) => {
+        const button = event.target && event.target.closest && event.target.closest("button");
+        if (button && button.textContent.trim() === "Unlock") capture();
+      },
+      true,
+    );
+    form.doc.addEventListener(
+      "keydown",
+      (event) => {
+        if (event.key === "Enter" && event.target && event.target.matches && event.target.matches(UNLOCK_INPUT)) capture();
+      },
+      true,
+    );
+    form.doc.addEventListener("submit", capture, true);
+  }
+
+  function fillAndSubmit(form, secret) {
+    const win = form.frame.contentWindow;
+    const setter = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value").set;
+    setter.call(form.input, secret);
+    form.input.dispatchEvent(new win.Event("input", { bubbles: true }));
+    bioFilledAt = Date.now();
+    // Let React apply the value (enables the button), then press Unlock.
+    setTimeout(() => {
+      const fresh = findUnlockForm();
+      if (fresh && fresh.button) fresh.button.click();
+    }, 30);
+  }
+
+  async function bioUnlock() {
+    if (bio.prompting || !bio.enrolled) return;
+    bio.prompting = true;
+    try {
+      const reply = await bioRequest("biometricUnlock");
+      if (reply.ok && typeof reply.secret === "string") {
+        const form = findUnlockForm();
+        if (!form) return;
+        const doc = form.doc;
+        fillAndSubmit(form, reply.secret);
+        // If the saved password stopped working (changed, wallet reset), turn
+        // the feature off instead of failing silently every time.
+        setTimeout(async () => {
+          const still = findUnlockForm();
+          if (!still || still.doc !== doc) return;
+          if (still.button && still.button.disabled) return; // still unlocking
+          const unlocked = await sendAsWalletUi({ type: "isWalletUnlocked" }).catch(() => false);
+          if (unlocked === true) return;
+          await bioRequest("biometricDisable");
+          bio.enrolled = false;
+          bio.wantSetup = true;
+          showToast("Saved password didn't work. Unlock with your password to set up fingerprint unlock again.", "error", 7000);
+        }, 10_000);
+      } else if (reply.error === "invalidated" || reply.error === "not_enrolled") {
+        bio.enrolled = false;
+        if (reply.error === "invalidated") {
+          bio.wantSetup = true;
+          showToast("Fingerprints changed on this phone. Unlock with your password to set fingerprint unlock up again.", "info", 7000);
+        }
+      } else if (reply.error === "lockout") {
+        showToast("Too many attempts. Unlock with your password.", "error", 5000);
+      }
+    } finally {
+      bio.prompting = false;
+    }
+  }
+
+  async function bioEnroll(secret) {
+    const reply = await bioRequest("biometricEnroll", { secret });
+    if (reply.ok) {
+      bio.enrolled = true;
+      bio.wantSetup = false;
+      if (bio.declined) persistBioDeclined(false);
+      showToast("Fingerprint unlock is on", "success");
+    } else if (reply.error && reply.error !== "cancelled" && reply.error !== "busy") {
+      showToast("Couldn't set up fingerprint unlock (" + reply.error + ")", "error", 5000);
+    }
+  }
+
+  function showBioOffer(secret) {
+    const card = document.getElementById("wc-bio-offer");
+    if (!card) return;
+    card.hidden = false;
+    const done = () => {
+      card.hidden = true;
+      yes.onclick = null;
+      no.onclick = null;
+    };
+    const yes = document.getElementById("wc-bio-offer-yes");
+    const no = document.getElementById("wc-bio-offer-no");
+    yes.onclick = () => {
+      done();
+      void bioEnroll(secret);
+    };
+    no.onclick = () => {
+      done();
+      persistBioDeclined(true);
+    };
+  }
+
+  /** The unlock screen just went away: offer (or finish) biometric setup. */
+  async function onUnlockScreenGone() {
+    const captured = bioCapture;
+    bioCapture = null;
+    if (!captured || captured.viaBiometric || Date.now() - captured.at > 60_000) return;
+    if (!bio.available || bio.enrolled) return;
+    const unlocked = await sendAsWalletUi({ type: "isWalletUnlocked" }).catch(() => false);
+    if (unlocked !== true) return;
+    if (bio.wantSetup) void bioEnroll(captured.secret);
+    else if (!bio.declined) showBioOffer(captured.secret);
+  }
+
+  function bioTick() {
+    const controls = document.getElementById("wc-bio");
+    if (!controls) return;
+    const form = findUnlockForm();
+    if (!form) {
+      controls.hidden = true;
+      if (unlockScreenShown) {
+        unlockScreenShown = false;
+        bioAutoPrompted = false;
+        void onUnlockScreenGone();
+      }
+      return;
+    }
+    unlockScreenShown = true;
+    watchUnlockForm(form);
+    controls.hidden = !bio.available;
+    document.getElementById("wc-bio-unlock").hidden = !bio.enrolled;
+    document.getElementById("wc-bio-off").hidden = !bio.enrolled;
+    document.getElementById("wc-bio-setup").hidden = bio.enrolled || bio.wantSetup;
+    // Prompt straight away: a locked wallet then costs one fingerprint touch.
+    if (bio.enrolled && appVisible && !bioAutoPrompted && !bio.prompting) {
+      bioAutoPrompted = true;
+      void bioUnlock();
+    }
+  }
+
+  function bindBioControls() {
+    document.getElementById("wc-bio-unlock").addEventListener("click", () => void bioUnlock());
+    document.getElementById("wc-bio-off").addEventListener("click", async () => {
+      await bioRequest("biometricDisable");
+      bio.enrolled = false;
+      showToast("Fingerprint unlock is off");
+    });
+    document.getElementById("wc-bio-setup").addEventListener("click", () => {
+      bio.wantSetup = true;
+      if (bio.declined) persistBioDeclined(false);
+      showToast("Unlock with your password once to finish setting up fingerprint unlock.", "info", 5000);
+    });
   }
 
   let manifest = null;
@@ -2141,12 +2399,20 @@
     // restart", not a browser start: don't fire runtime.onStartup for it.
     const browserStart = !hello || hello.freshProcess !== false;
 
+    // runtime.onInstalled needs to run before a fresh install's UI decides
+    // anything; otherwise boot the wallet UI in parallel with the background
+    // (its messages queue until the background is ready) to cut cold start.
+    const previous = meta.has("installedVersion") ? JSON.parse(meta.get("installedVersion")) : null;
+    if (previous !== null) createMainUi();
+
+    bio.declined = meta.has("bioDeclined") && JSON.parse(meta.get("bioDeclined")) === true;
+    if (nativeBridge) void refreshBioStatus();
+
     await startBackground();
     backgroundReady = true;
     log("background ready");
 
     // runtime.onInstalled / onStartup
-    const previous = meta.has("installedVersion") ? JSON.parse(meta.get("installedVersion")) : null;
     const version = manifest.version;
     if (previous === null) emitEvent("runtime.onInstalled", [{ reason: "install" }], "background");
     else if (previous !== version) emitEvent("runtime.onInstalled", [{ reason: "update", previousVersion: previous }], "background");
@@ -2160,10 +2426,11 @@
     for (const run of queuedUntilBackground.splice(0)) run();
     setTimeout(() => void refreshWalletConnectSessionCount(), 3000);
 
-    // Give onInstalled a moment to open onboarding before the UI decides.
-    setTimeout(createMainUi, previous === null ? 300 : 0);
+    // Fresh install: give onInstalled a moment to open onboarding first.
+    if (previous === null) setTimeout(createMainUi, 300);
 
-    setInterval(updateChrome, 500);
+    bindBioControls();
+    setInterval(updateChrome, 200);
     document.getElementById("wc-fab-browser").addEventListener("click", () => {
       if (!nativePost({ cmd: "openDapp" })) showToast("The dApp browser is available in the Android app");
     });

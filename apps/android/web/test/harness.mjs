@@ -192,6 +192,8 @@ export async function createWalletContext(browser, { origin = "localhost", serve
     waiters: [],
     // Process-lifetime chrome.storage.session mirror (see `sessionStore`).
     sessionStore: new Map(),
+    // Biometric vault stand-in (tests opt in with `bio.available = true`).
+    bio: { available: false, stored: null },
     hellosThisProcess: 0,
     /** Simulates Android killing the whole app process (memory is gone). */
     killProcess() {
@@ -249,6 +251,25 @@ export async function createWalletContext(browser, { origin = "localhost", serve
           .toShell({ type: "hello", sdkInt: 34, appVersion: "test", freshProcess, session: Object.fromEntries(native.sessionStore) })
           .catch(() => {});
       }
+    }
+    if (/^biometric/.test(cmd.cmd) && source.frame === source.page.mainFrame()) {
+      const bio = native.bio;
+      let reply;
+      if (cmd.cmd === "biometricStatus") reply = { available: bio.available, enrolled: bio.available && bio.stored !== null };
+      else if (cmd.cmd === "biometricEnroll") {
+        if (bio.available) bio.stored = cmd.secret;
+        reply = bio.available ? { ok: true } : { ok: false, error: "unavailable" };
+      } else if (cmd.cmd === "biometricUnlock") {
+        reply = bio.stored !== null ? { ok: true, secret: bio.stored } : { ok: false, error: "not_enrolled" };
+      } else {
+        bio.stored = null;
+        reply = { ok: true };
+      }
+      native.record({ cmd: cmd.cmd, id: cmd.id }); // never record the secret
+      source.frame
+        .evaluate((json) => window.__wcNativeDeliver(json), JSON.stringify(Object.assign({ type: cmd.cmd, id: cmd.id }, reply)))
+        .catch(() => {});
+      return;
     }
     if (cmd.cmd === "sessionStore" && source.frame === source.page.mainFrame()) {
       if (cmd.op === "set") for (const [key, json] of Object.entries(cmd.items || {})) native.sessionStore.set(key, json);

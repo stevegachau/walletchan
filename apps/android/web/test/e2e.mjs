@@ -208,6 +208,34 @@ async function suiteCreate(browser, server) {
     await waitForHome(ui2, 10_000);
     pass("create: back closes a sub-screen");
 
+    // Fingerprint unlock (native vault mocked): offered after a password
+    // unlock, then a locked wallet opens with no typing.
+    w.native.bio.available = true;
+    w.native.killProcess();
+    await w.shell.reload();
+    const uiBio = await mainUiFrame(w.shell);
+    const bioField = uiBio.getByLabel("Enter password to unlock", { exact: true });
+    await bioField.waitFor({ timeout: 60_000 });
+    await w.shell.waitForSelector("#wc-bio-setup", { state: "visible", timeout: 10_000 });
+    await bioField.fill(PASSWORD);
+    await uiBio.getByRole("button", { name: "Unlock", exact: true }).click();
+    await waitForHome(uiBio);
+    await w.shell.waitForSelector("#wc-bio-offer", { state: "visible", timeout: 10_000 });
+    await screenshot(w.shell, "create-08-fingerprint-offer");
+    await w.shell.click("#wc-bio-offer-yes");
+    await w.shell.waitForFunction(() => /Fingerprint unlock is on/.test(document.getElementById("wc-toast").textContent), null, { timeout: 10_000 });
+    assert(w.native.bio.stored === PASSWORD, "vault received the password that unlocked the wallet");
+    pass("create: after a password unlock WalletChan offers fingerprint unlock and enrolls");
+
+    const bioMark = w.native.commands.length;
+    const lockedAt = Date.now();
+    await uiBio.getByRole("button", { name: "Lock wallet" }).click();
+    await w.native.waitFor((c) => c.cmd === "biometricUnlock" && w.native.commands.indexOf(c) >= bioMark, 15_000, "biometric prompt");
+    await waitForHome(uiBio, 30_000);
+    await bioField.waitFor({ state: "hidden", timeout: 15_000 }); // unlocked without typing
+    console.log(`    timing: lock -> unlocked by fingerprint in ${Date.now() - lockedAt} ms`);
+    pass("create: locked wallet unlocks with one fingerprint touch (auto prompt)");
+
     const errors = relevantErrors(w.consoleErrors);
     if (errors.length) console.log("    console errors:\n      " + errors.slice(0, 20).join("\n      "));
     return w;

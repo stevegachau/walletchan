@@ -156,6 +156,18 @@ copy the wallet loses its unlocked session. So:
 
 ## Biometric unlock (opt-in)
 
+**Shell integration (`web/shell.js`, "Biometric unlock" section).** The shell
+detects the wallet's unlock form (`input#unlock-password` in the main UI or
+the topmost overlay). When enrolled it shows "Unlock with fingerprint" and
+auto-prompts once per appearance of the form (again after `appResumed`), fills
+the form with the returned password and presses Unlock. Enrollment is offered
+only after a successful *manual* unlock (the typed password is captured from
+the form on submit, held in memory ≤ 60 s, and handed to `biometricEnroll`
+only if the user taps Enable). "Not now" is remembered (`meta.bioDeclined`);
+"Set up fingerprint unlock" on the unlock screen re-arms it. If the saved
+password no longer unlocks (changed / wallet reset) or the key is invalidated,
+the shell disables the vault and asks for a password unlock to set it up again.
+
 The wallet unlocks with a password typed into its unlock screen. After a
 successful manual unlock, and only with the user's consent, the shell may hand
 native the password once; native keeps it encrypted under an Android Keystore

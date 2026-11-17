@@ -167,6 +167,14 @@ screenshots and console logs to `web/test/.tmp/`.
 - `FLAG_SECURE` (no screenshots/screen recording, blank Recents thumbnail).
   Toggle with `AppConfig.SECURE_SCREEN`.
 - No backups (`allowBackup=false`, data-extraction rules exclude everything).
+- Opt-in fingerprint/face unlock: the password is kept encrypted under a
+  Keystore key bound to strong biometrics (invalidated when fingerprints
+  change); offered after a password unlock, auto-prompts on the unlock screen.
+- Speed: approvals appear inline in the running wallet screen (side-panel
+  mode), the wallet returns to the calling app ~0.1 s after a decision, the UI
+  and background boot in parallel, a foreground service keeps the WalletConnect
+  relay alive while sessions exist, and `chrome.storage.session` survives
+  WebView restarts so the wallet stays unlocked.
 
 ## Limitations
 
