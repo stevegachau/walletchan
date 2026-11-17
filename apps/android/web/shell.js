@@ -1701,6 +1701,27 @@
     return { promise, cancel: cleanup };
   }
 
+  /**
+   * Pairing started from the wallet's own WalletConnect screen (a pasted
+   * `wc:` link). On a phone that link was almost always copied from a dApp in
+   * the browser, so once connected, hand the user back to it, like a deep link.
+   * QR scans go through pairWalletConnect (walletConnectBusy) and stay put:
+   * the dApp is on another device.
+   */
+  busObservers.push((message) => {
+    if (!message || message.type !== "walletConnectPair" || walletConnectBusy) return;
+    void returnAfterUiPairing();
+  });
+
+  async function returnAfterUiPairing() {
+    const before = await sendAsWalletUi({ type: "walletConnectGetSessions" }).catch(() => null);
+    const knownTopics = new Set(((before && before.sessions) || []).map((s) => s.topic));
+    const outcome = await waitForWalletConnectOutcome(knownTopics, 45_000).promise;
+    if (outcome.kind !== "connected") return;
+    showToast("Connected to " + (outcome.name || "dApp") + " — returning to your browser", "success");
+    setTimeout(() => returnToCaller("external"), 1200);
+  }
+
   /** `source`: "external" | "dapp" | "wallet" for deep links, undefined for QR scans. */
   function handleWalletConnectText(text, source) {
     const uri = extractWalletConnectUri(text);
