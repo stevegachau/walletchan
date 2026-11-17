@@ -141,6 +141,42 @@
       #wc-toast[data-kind="success"] {
         background: #067647;
       }
+      /* Shown from the first frame until the wallet UI has painted, so a cold
+         start never looks like a black screen. */
+      #wc-splash {
+        position: absolute;
+        inset: 0;
+        z-index: 4;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 22px;
+        background: #0b0b0d;
+        transition: opacity 160ms ease-out;
+      }
+      #wc-splash.gone {
+        opacity: 0;
+        pointer-events: none;
+      }
+      #wc-splash img {
+        width: 96px;
+        height: 96px;
+        border-radius: 22px;
+      }
+      #wc-splash .spin {
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        border: 2px solid rgba(255, 255, 255, 0.18);
+        border-top-color: #f59e0b;
+        animation: wc-spin 0.8s linear infinite;
+      }
+      @keyframes wc-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
       /* Biometric unlock controls, shown over the wallet's unlock screen. */
       #wc-bio {
         position: absolute;
@@ -232,6 +268,7 @@
     <div id="wc-root">
       <div id="wc-main"></div>
       <div id="wc-overlays"></div>
+      <div id="wc-splash" aria-hidden="true"><img src="/walletchan-icon.png" alt="" /><div class="spin"></div></div>
       <div id="wc-fabs" hidden>
         <button id="wc-fab-browser" class="wc-fab" type="button" aria-label="Open dApp browser" title="dApp browser">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">

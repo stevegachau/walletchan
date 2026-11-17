@@ -169,7 +169,6 @@ export async function runWalletConnectSuite(browser, { pass, assert, relevantErr
     pass("wc: a scanned proposal is not auto-approved; the wallet shows the Connect app review after unlock");
     await reviewAction(review, "Connect");
     const session = await withTimeout(firstApproval, 90_000, "session approval");
-    await waitForToast(w.shell, /Connected to/i, 20_000);
     await screenshot(w.shell, "wc-01c-connected");
     pass("wc: Connect in the review establishes the session");
     await w.native.waitFor((cmd) => cmd.cmd === "wcSessions" && cmd.count >= 1, 15_000, "wcSessions count reported to native");
@@ -242,12 +241,28 @@ export async function runWalletConnectSuite(browser, { pass, assert, relevantErr
       },
     });
     const wcMark = w.native.commands.length;
+    const linkAt = Date.now();
     await w.native.toShell({ type: "deepLink", url: fourth.uri, source: "external" });
+    // Film the gap between the link and the Connect screen.
+    const film = (async () => {
+      for (let i = 0; i < 40; i++) {
+        await w.shell.screenshot({ path: `${process.cwd()}/web/test/.tmp/wc-gap-${String(i).padStart(2, "0")}-${Date.now() - linkAt}ms.png` }).catch(() => {});
+        if (await w.shell.evaluate(() => window.__wcReviewSeen === true).catch(() => false)) break;
+        await w.shell.waitForTimeout(100);
+      }
+    })();
     const fourthReview = await connectionReview(w.shell);
+    const reviewAt = Date.now();
+    await w.shell.evaluate(() => (window.__wcReviewSeen = true));
+    await film;
+    const broadcastAt = await w.shell.evaluate(() => window.__walletchanShell.debug.timings.proposalBroadcastAt);
+    console.log(`    timing: wc: link -> proposal reached the wallet ${broadcastAt - linkAt} ms -> Connect screen visible ${reviewAt - linkAt} ms`);
     await reviewAction(fourthReview, "Connect");
     const fourthSession = await withTimeout(fourth.approval(), 90_000, "wc: link session approval");
     assert(fourthSession.topic !== session.topic, "new session");
     await expectSingleReturn(w.native, wcMark, "return to the browser after a wc: link connect");
+    const toastAfterConnect = await w.shell.evaluate(() => document.getElementById("wc-toast").classList.contains("visible") ? document.getElementById("wc-toast").textContent : "");
+    assert(toastAfterConnect === "", "no toast in the connect flow (got: " + toastAfterConnect + ")");
     pass("wc: a plain wc: link from another app shows the review, connects, and returns once");
 
     // Rejecting in the review: the dApp's approval() rejects and we still return once.
@@ -261,7 +276,6 @@ export async function runWalletConnectSuite(browser, { pass, assert, relevantErr
     await w.native.toShell({ type: "deepLink", url: "walletchan://wc?uri=" + encodeURIComponent(rejected.uri), source: "external" });
     const rejectReview = await connectionReview(w.shell);
     await reviewAction(rejectReview, "Reject");
-    await waitForToast(w.shell, /Connection rejected/i, 20_000);
     await screenshot(w.shell, "wc-05-rejected");
     const rejectDeadline = Date.now() + 30_000;
     while (!rejectedState.settled && Date.now() < rejectDeadline) await w.shell.waitForTimeout(200);
@@ -295,7 +309,6 @@ export async function runWalletConnectSuite(browser, { pass, assert, relevantErr
     await reviewAction(thirdReview, "Connect");
     const thirdSession = await withTimeout(third.approval(), 90_000, "pasted-link session approval");
     assert(thirdSession.topic !== session.topic, "new session");
-    await waitForToast(w.shell, /returning to your browser/i, 20_000);
     await screenshot(w.shell, "wc-04-pasted-link-connected");
     await expectSingleReturn(w.native, pasteMark, "return to the browser after a pasted-link connect");
     pass("wc: pasting the link shows the review, connects, and returns to the browser once");

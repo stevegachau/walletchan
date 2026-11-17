@@ -531,7 +531,11 @@
 
   function runtimeConnect(contextId, name) {
     const ctx = contexts.get(contextId);
-    const port = { id: "p" + nextPortId++, name: String(name || ""), opener: contextId, receivers: new Set(), closed: false };
+    // `queued`: messages the opener posts before the port is connected. Chrome
+    // delivers those once the other end's onConnect has run; dropping them
+    // lost the wallet UI's keepalive registration on every start (a 2 s stall
+    // before first paint, and the open UI never paused auto-lock).
+    const port = { id: "p" + nextPortId++, name: String(name || ""), opener: contextId, receivers: new Set(), closed: false, started: false, queued: [] };
     ports.set(port.id, port);
     const start = () => {
       if (port.closed) return;
@@ -541,7 +545,13 @@
         const accepted = safeDispatch(target, "onConnect", infoJson);
         if (accepted) port.receivers.add(target.id);
       }
-      if (port.receivers.size === 0) closePort(port, null, NO_RECEIVER);
+      port.started = true;
+      if (port.receivers.size === 0) {
+        port.queued = [];
+        closePort(port, null, NO_RECEIVER);
+        return;
+      }
+      for (const messageJson of port.queued.splice(0)) deliverPortMessage(port, [...port.receivers], messageJson);
     };
     setTimeout(() => {
       if (backgroundReady) start();
@@ -550,16 +560,23 @@
     return port.id;
   }
 
-  function portPostMessage(contextId, portId, messageJson) {
-    const port = ports.get(portId);
-    if (!port || port.closed) return false;
-    const targets = contextId === port.opener ? [...port.receivers] : [port.opener];
+  function deliverPortMessage(port, targets, messageJson) {
     setTimeout(() => {
       for (const targetId of targets) {
         const target = contexts.get(targetId);
-        if (target) safeDispatch(target, "onPortMessage", portId, messageJson);
+        if (target) safeDispatch(target, "onPortMessage", port.id, messageJson);
       }
     }, 0);
+  }
+
+  function portPostMessage(contextId, portId, messageJson) {
+    const port = ports.get(portId);
+    if (!port || port.closed) return false;
+    if (contextId === port.opener && !port.started) {
+      port.queued.push(messageJson); // delivered once onConnect has run
+      return true;
+    }
+    deliverPortMessage(port, contextId === port.opener ? [...port.receivers] : [port.opener], messageJson);
     return true;
   }
 
@@ -1035,7 +1052,7 @@
     // the dApp shows the result itself.
     setTimeout(() => {
       if (!topOverlay()) nativePost({ cmd: "backUnhandled" });
-    }, 80);
+    }, 0);
   }
 
   // ---------------------------------------------------------------------------
@@ -1775,19 +1792,24 @@
     walletConnectBusy = true;
     let watcher = null;
     try {
-      const accounts = await sendAsWalletUi({ type: "getAccounts" }).catch(() => null);
+      // Speed first, no progress toasts: pair immediately so the Connect
+      // screen appears as soon as the proposal arrives. Pairing needs no
+      // unlock; nothing connects until the user taps Connect. The watcher is
+      // armed first; the session/account lookups run alongside the pairing
+      // (topics found there can only be pre-existing sessions).
+      const knownTopics = new Set(knownWalletConnectTopics);
+      watcher = waitForWalletConnectOutcome(knownTopics);
+      const pairing = sendAsWalletUi({ type: "walletConnectPair", uri });
+      const [accounts] = await Promise.all([
+        sendAsWalletUi({ type: "getAccounts" }).catch(() => null),
+        rememberWalletConnectTopics(knownTopics),
+      ]);
       if (!Array.isArray(accounts) || accounts.length === 0) {
+        watcher.cancel();
         showToast("Set up your wallet before connecting a dApp", "error", 5000);
         return;
       }
-      // Pairing needs no unlock. The wallet UI then shows the connection
-      // review (after the unlock screen if the wallet is locked); nothing is
-      // connected until the user taps Connect.
-      showToast("Connecting via WalletConnect…", "info", 0);
-      const knownTopics = new Set(knownWalletConnectTopics);
-      await rememberWalletConnectTopics(knownTopics);
-      watcher = waitForWalletConnectOutcome(knownTopics);
-      const result = await sendAsWalletUi({ type: "walletConnectPair", uri });
+      const result = await pairing;
       if (!result || !result.success) {
         watcher.cancel();
         showToast("WalletConnect failed: " + ((result && result.error) || "unknown error"), "error", 6000);
@@ -1810,11 +1832,10 @@
    * user can read them.
    */
   function finishWalletConnectPairing(outcome, returnTo) {
-    if (outcome.kind === "connected") {
-      const suffix = returnTo === "external" ? " — returning to your browser" : "";
-      showToast("Connected to " + (outcome.name || "dApp") + suffix, "success");
-    } else if (outcome.kind === "userRejected") {
-      showToast("Connection rejected", "info");
+    if (outcome.kind === "connected" || outcome.kind === "userRejected") {
+      // No success/rejection toast: the dApp shows the result. Hand back
+      // to the calling app at once.
+      hideToast();
     } else if (outcome.kind === "rejected") {
       showToast("WalletConnect: " + (outcome.error || "connection rejected"), "error", 6000);
       return;
@@ -1825,7 +1846,7 @@
       hideToast();
       return;
     }
-    if (returnTo) setTimeout(() => returnToCaller(returnTo), 300);
+    if (returnTo) returnToCaller(returnTo);
   }
 
   const PROPOSAL_ARRIVAL_TIMEOUT_MS = 45_000;
@@ -2108,7 +2129,62 @@
     }
   }
 
+  /**
+   * Speed-first WalletConnect on a phone: hide the wallet UI's own
+   * "Connecting to dapp" progress toast (errors still show). The Connect
+   * screen itself is the feedback.
+   */
+  /** Timestamps for performance tests (no secrets). */
+  const timings = {};
+  busObservers.push((message) => {
+    if (message && message.type === WALLETCONNECT_PROPOSAL_REQUEST) timings.proposalBroadcastAt = Date.now();
+  });
+
+  const PROGRESS_TOASTS = /^\s*Connecting to dapp/i;
+  const toastWatchedDocs = new WeakSet();
+  function suppressProgressToasts() {
+    let doc;
+    try {
+      doc = mainUiFrame && mainUiFrame.contentDocument;
+    } catch {
+      return;
+    }
+    if (!doc || !doc.body || toastWatchedDocs.has(doc)) return;
+    toastWatchedDocs.add(doc);
+    const hide = (root) => {
+      for (const item of root.querySelectorAll('[id^="chakra-toast-manager"] li')) {
+        if (PROGRESS_TOASTS.test(item.textContent || "")) item.style.display = "none";
+      }
+    };
+    new doc.defaultView.MutationObserver(() => hide(doc)).observe(doc.body, { childList: true, subtree: true });
+    hide(doc);
+  }
+
+  /** Hide the splash once the wallet UI (or an onboarding overlay) has painted. */
+  let splashGone = false;
+  function updateSplash() {
+    if (splashGone) return;
+    let painted = overlayWindows.size > 0;
+    if (!painted && mainUiFrame) {
+      try {
+        const body = mainUiFrame.contentDocument && mainUiFrame.contentDocument.body;
+        painted = Boolean(body && body.innerText && body.innerText.trim().length > 0);
+      } catch {
+        painted = false;
+      }
+    }
+    if (!painted && performance.now() - (timings.bootStart || 0) < 15_000) return;
+    splashGone = true;
+    const splash = document.getElementById("wc-splash");
+    if (splash) {
+      splash.classList.add("gone");
+      setTimeout(() => splash.remove(), 200);
+    }
+  }
+
   function updateChrome() {
+    updateSplash();
+    suppressProgressToasts();
     const fabs = document.getElementById("wc-fabs");
     if (fabs) fabs.hidden = overlayWindows.size > 0 || !uiOnHomeScreen() || uiToastVisible();
     checkInlineRequestDone();
@@ -2403,6 +2479,7 @@
   let helloResolve = null;
 
   async function boot() {
+    timings.bootStart = performance.now();
     try {
       manifest = await fetch("/manifest.json").then((r) => r.json());
     } catch (error) {
@@ -2413,6 +2490,7 @@
     try {
       db = await openDb();
       await Promise.all([loadStore("local", storageAreas.local), loadStore("sync", storageAreas.sync), loadStore("meta", meta)]);
+      timings.storageLoaded = performance.now();
     } catch (error) {
       warn("IndexedDB unavailable, storage will not persist", error);
       db = null;
@@ -2441,6 +2519,7 @@
       ]).catch((error) => warn("panel mode default persist failed", error));
     }
 
+    timings.hello = performance.now();
     const restoredSession = hello && hello.session && typeof hello.session === "object" ? hello.session : null;
     if (restoredSession) {
       for (const key of Object.keys(restoredSession)) {
@@ -2461,7 +2540,9 @@
     bio.declined = meta.has("bioDeclined") && JSON.parse(meta.get("bioDeclined")) === true;
     if (nativeBridge) void refreshBioStatus();
 
+    timings.uiStarted = performance.now();
     await startBackground();
+    timings.backgroundReady = performance.now();
     backgroundReady = true;
     log("background ready");
 
@@ -2484,6 +2565,10 @@
 
     bindBioControls();
     setInterval(updateChrome, 200);
+    const splashPoll = setInterval(() => {
+      updateSplash();
+      if (splashGone) clearInterval(splashPoll);
+    }, 50);
     document.getElementById("wc-fab-browser").addEventListener("click", () => {
       if (!nativePost({ cmd: "openDapp" })) showToast("The dApp browser is available in the Android app");
     });
@@ -2514,6 +2599,7 @@
     },
     // Test/debug hooks.
     debug: {
+      timings,
       handleNativeMessage: onNativeMessage,
       overlayCount: () => overlayWindows.size,
       storageSnapshot: (area) => storageGet(area, null),
