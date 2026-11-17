@@ -33,6 +33,10 @@
   if (window.__walletchanShimInstalled) return;
   window.__walletchanShimInstalled = true;
 
+  // Lets extension code opt into Android-only behaviour, e.g. advertising the
+  // `walletchan://` app link as WalletConnect `redirect.native` metadata.
+  Object.defineProperty(window, "__WALLETCHAN_PLATFORM__", { value: "android", enumerable: false });
+
   const ORIGIN = location.origin;
   const PATH = location.pathname;
   const isTop = window.top === window;

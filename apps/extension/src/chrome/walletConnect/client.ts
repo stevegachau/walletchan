@@ -29,6 +29,21 @@ import { handleWalletConnectSessionProposal } from "./sessionProposal";
 type WalletKitInstance = Awaited<ReturnType<typeof WalletKit.init>>;
 
 const DEFAULT_PROJECT_ID = "56262dba600174595278ffdf73ceb06f";
+
+/** App link the WalletChan Android app registers (apps/android AndroidManifest). */
+const ANDROID_APP_LINK = "walletchan://";
+
+/**
+ * In the Android app (apps/android sets `__WALLETCHAN_PLATFORM__`), advertise the
+ * app link so mobile dApps can bring WalletChan forward after sending a request
+ * instead of guessing (which surfaces Android's "open with" chooser). The
+ * browser extension has no app link, so it advertises none.
+ */
+function getWalletConnectRedirect(): { native: string } | undefined {
+  const platform = (globalThis as { __WALLETCHAN_PLATFORM__?: unknown })
+    .__WALLETCHAN_PLATFORM__;
+  return platform === "android" ? { native: ANDROID_APP_LINK } : undefined;
+}
 const PROJECT_ID =
   import.meta.env.VITE_WALLETCONNECT_PROJECT_ID ||
   import.meta.env.VITE_WC_PROJECT_ID ||
@@ -238,6 +253,7 @@ export async function initWalletConnect(): Promise<boolean> {
       const storageNamespace = await getWalletConnectStorageNamespace();
       if (generation !== walletConnectGeneration) return null;
       const core = createWalletConnectCore(storageNamespace);
+      const redirect = getWalletConnectRedirect();
       const kit = await WalletKit.init({
         core,
         metadata: {
@@ -245,6 +261,7 @@ export async function initWalletConnect(): Promise<boolean> {
           description: "WalletChan browser wallet extension",
           url: WALLETCHAN_SITE_URL,
           icons: [WALLETCHAN_ICON_URL],
+          ...(redirect ? { redirect } : {}),
         },
       });
       if (generation === walletConnectGeneration) {

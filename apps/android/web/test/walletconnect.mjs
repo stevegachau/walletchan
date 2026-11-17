@@ -124,6 +124,11 @@ export async function runWalletConnectSuite(browser, { pass, assert, relevantErr
     await screenshot(w.shell, "wc-02-connected");
     pass(`wc: dApp session established over the real relay (${session.namespaces.eip155.accounts.length} accounts)`);
 
+    // Mobile dApps bring the wallet forward with the wallet's redirect metadata.
+    const redirect = session.peer && session.peer.metadata && session.peer.metadata.redirect;
+    assert(redirect && redirect.native === "walletchan://", "wallet advertises redirect.native walletchan:// (got " + JSON.stringify(redirect) + ")");
+    pass("wc: wallet metadata advertises redirect.native walletchan://");
+
     const message = "Log in to WalletChan Android E2E";
     const hexMessage = "0x" + Buffer.from(message, "utf8").toString("hex");
     const signaturePromise = dapp.request({
@@ -132,6 +137,11 @@ export async function runWalletConnectSuite(browser, { pass, assert, relevantErr
       request: { method: "personal_sign", params: [hexMessage, TEST_ADDRESS] },
     });
     signaturePromise.catch(() => {});
+    // Like a dApp in the phone's browser: after sending the request it opens
+    // our redirect link. Once the request is handled we must step aside so
+    // Android returns to that app.
+    const commandMark = w.native.commands.length;
+    await w.native.toShell({ type: "deepLink", url: "walletchan://wc?requestId=1&sessionTopic=" + session.topic, source: "external" });
     const approvalFrame = await overlayFrame(w.shell, "/index.html", 60_000);
     await approvalFrame.getByRole("heading", { name: "Signature request" }).waitFor({ timeout: 60_000 });
     await w.shell.waitForTimeout(800);
@@ -141,6 +151,29 @@ export async function runWalletConnectSuite(browser, { pass, assert, relevantErr
     const recovered = ethers().verifyMessage(message, signature);
     assert(recovered.toLowerCase() === TEST_ADDRESS.toLowerCase(), "signature recovers to " + recovered);
     pass("wc: personal_sign approved in the wallet, signature recovers to " + recovered);
+    await w.native.waitFor(
+      (cmd) => cmd.cmd === "backUnhandled" && w.native.commands.indexOf(cmd) >= commandMark,
+      10_000,
+      "return to the calling app (backUnhandled)",
+    );
+    pass("wc: after approving a request opened via walletchan:// the wallet returns to the calling app");
+
+    // Connecting from a dApp on the phone: `walletchan://wc?uri=…` pairs, then returns.
+    const second = await dapp.connect({
+      optionalNamespaces: {
+        eip155: { chains: ["eip155:1"], methods: ["personal_sign"], events: ["accountsChanged"] },
+      },
+    });
+    const pairMark = w.native.commands.length;
+    await w.native.toShell({ type: "deepLink", url: "walletchan://wc?uri=" + encodeURIComponent(second.uri), source: "external" });
+    const secondSession = await withTimeout(second.approval(), 90_000, "second session approval");
+    assert(secondSession.topic !== session.topic, "new session");
+    await w.native.waitFor(
+      (cmd) => cmd.cmd === "backUnhandled" && w.native.commands.indexOf(cmd) >= pairMark,
+      15_000,
+      "return to the calling app after pairing",
+    );
+    pass("wc: connecting via walletchan://wc?uri= deep link pairs and returns to the calling app");
 
     const errors = relevantErrors(w.consoleErrors);
     if (errors.length) console.log("    console errors:\n      " + errors.slice(0, 20).join("\n      "));

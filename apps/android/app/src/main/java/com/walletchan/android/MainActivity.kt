@@ -56,7 +56,8 @@ class MainActivity : AppCompatActivity(), ShellBridge.Host, DappBrowser.Host, Fi
     private lateinit var notifier: Notifier
     private var errorShown = false
 
-    private val pendingDeepLinks = ArrayDeque<String>()
+    /** Deep links received before the shell said hello: (url, source). */
+    private val pendingDeepLinks = ArrayDeque<Pair<String, String>>()
     private val pendingNotifications = ArrayDeque<Triple<String, String, String>>()
     private var notificationPermissionAsked = false
     private var qrInFlight = false
@@ -230,7 +231,7 @@ class MainActivity : AppCompatActivity(), ShellBridge.Host, DappBrowser.Host, Fi
         when {
             UrlUtils.isAppOrigin(url) -> Log.w(AppConfig.LOG_TAG, "Ignoring popup to app origin: $url")
             UrlUtils.isHttpUrl(url) -> openDapp(url)
-            UrlUtils.isWalletDeepLink(url) -> deliverDeepLink(url)
+            UrlUtils.isWalletDeepLink(url) -> deliverDeepLink(url, DEEP_LINK_SOURCE_WALLET)
             else -> ExternalLinks.launchNonHttp(this, url) { fallback -> openDapp(fallback) }
         }
     }
@@ -240,7 +241,8 @@ class MainActivity : AppCompatActivity(), ShellBridge.Host, DappBrowser.Host, Fi
     override fun onShellReady() {
         dapp.onShellReady()
         while (pendingDeepLinks.isNotEmpty()) {
-            sendDeepLink(pendingDeepLinks.removeFirst())
+            val (url, source) = pendingDeepLinks.removeFirst()
+            sendDeepLink(url, source)
         }
     }
 
@@ -337,7 +339,7 @@ class MainActivity : AppCompatActivity(), ShellBridge.Host, DappBrowser.Host, Fi
 
     override fun sendToShell(msg: JSONObject): Boolean = shellBridge.sendToShell(msg)
 
-    override fun onWalletDeepLink(url: String) = deliverDeepLink(url)
+    override fun onWalletDeepLink(url: String) = deliverDeepLink(url, DEEP_LINK_SOURCE_DAPP)
 
     override fun onDappVisibilityChanged(visible: Boolean) {
         // The wallet WebView stays VISIBLE underneath (so Chromium doesn't throttle the
@@ -377,22 +379,29 @@ class MainActivity : AppCompatActivity(), ShellBridge.Host, DappBrowser.Host, Fi
         // Relaunch from Recents replays the original intent; don't re-pair an old link.
         if (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
         val url = intent.dataString ?: return
-        if (UrlUtils.isWalletDeepLink(url)) deliverDeepLink(url)
+        // Opened by another app (e.g. a dApp in Chrome handing off a WalletConnect
+        // request): the shell sends the user back there once the request is handled.
+        if (UrlUtils.isWalletDeepLink(url)) deliverDeepLink(url, DEEP_LINK_SOURCE_EXTERNAL)
     }
 
-    private fun deliverDeepLink(url: String) {
+    /**
+     * `source` tells the shell who opened the link: "external" (another app via an
+     * intent), "dapp" (the in-app dApp browser) or "wallet" (the wallet UI itself).
+     */
+    private fun deliverDeepLink(url: String, source: String) {
         if (shellBridge.isShellReady) {
-            sendDeepLink(url)
+            sendDeepLink(url, source)
         } else if (pendingDeepLinks.size < 10) {
-            pendingDeepLinks.addLast(url)
+            pendingDeepLinks.addLast(url to source)
         }
     }
 
-    private fun sendDeepLink(url: String) {
-        if (shellBridge.sendToShell(JSONObject().put("type", "deepLink").put("url", url))) {
+    private fun sendDeepLink(url: String, source: String) {
+        val msg = JSONObject().put("type", "deepLink").put("url", url).put("source", source)
+        if (shellBridge.sendToShell(msg)) {
             showWallet()
         } else {
-            pendingDeepLinks.addFirst(url)
+            pendingDeepLinks.addFirst(url to source)
         }
     }
 
@@ -445,3 +454,7 @@ class MainActivity : AppCompatActivity(), ShellBridge.Host, DappBrowser.Host, Fi
         null
     }
 }
+
+private const val DEEP_LINK_SOURCE_EXTERNAL = "external"
+private const val DEEP_LINK_SOURCE_DAPP = "dapp"
+private const val DEEP_LINK_SOURCE_WALLET = "wallet"

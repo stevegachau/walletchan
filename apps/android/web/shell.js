@@ -596,6 +596,9 @@
   let nextTabId = 2;
   let focusedWindowId = MAIN_WINDOW_ID;
   let dappTab = null; // { id, url, title, status }
+  // WalletConnect deep link awaiting its approval window (see armReturnToCaller).
+  const RETURN_WINDOW_MS = 90_000;
+  let pendingReturn = null; // { source: "external" | "dapp", until: number }
   let dappVisible = false;
 
   function screenGeometry() {
@@ -786,8 +789,15 @@
       tabId,
       frame,
       returnToDapp: false,
+      // Set when a WalletConnect deep link from another app (or the dApp
+      // browser) is waiting for this approval: "external" | "dapp" | null.
+      returnToCaller: null,
+      openedAt: Date.now(),
       zIndex: ++overlayZ,
     };
+    if (pendingReturn && Date.now() < pendingReturn.until && !isOnboardingUrl(absolute)) {
+      overlay.returnToCaller = pendingReturn.source;
+    }
     frame.style.zIndex = String(overlay.zIndex);
     overlayWindows.set(windowId, overlay);
     overlayTabs.set(tabId, { id: tabId, windowId, url: absolute, title: "WalletChan", status: "loading" });
@@ -849,8 +859,57 @@
     if (overlay.returnToDapp && !stillReturning && dappTab) {
       nativePost({ cmd: "showDapp" });
     }
+    const stillForCaller = [...overlayWindows.values()].some((o) => o.returnToCaller);
+    if (overlay.returnToCaller && !stillForCaller && !overlay.returnToDapp) {
+      returnToCaller(overlay.returnToCaller);
+    }
     updateChrome();
     return true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Returning to the app that handed us a WalletConnect link
+  // ---------------------------------------------------------------------------
+
+  /**
+   * A dApp on the phone (in Chrome, or in our dApp browser) sends a WalletConnect
+   * request over the relay, then opens `walletchan://…` (our advertised
+   * `redirect.native`) or a `wc:…?requestId=` link to bring the wallet forward.
+   * Approval windows opened shortly before/after such a link are tagged; when
+   * the last of them closes we hand the user back to the dApp, like native
+   * mobile wallets do.
+   */
+
+  function isOnboardingUrl(url) {
+    try {
+      return extensionPath(url) === "/onboarding.html";
+    } catch {
+      return false;
+    }
+  }
+
+  function armReturnToCaller(source) {
+    if (source !== "external" && source !== "dapp") return;
+    pendingReturn = { source, until: Date.now() + RETURN_WINDOW_MS };
+    // The relay may have delivered the request before the link arrived.
+    for (const overlay of overlayWindows.values()) {
+      const tab = overlayTabs.get(overlay.tabId);
+      if (tab && isOnboardingUrl(tab.url)) continue;
+      if (Date.now() - overlay.openedAt < RETURN_WINDOW_MS) overlay.returnToCaller = source;
+    }
+  }
+
+  function returnToCaller(source) {
+    pendingReturn = null;
+    if (source === "dapp") {
+      if (dappTab) nativePost({ cmd: "showDapp" });
+      return;
+    }
+    // "external": let the approval close visibly, then step aside so Android
+    // shows the app that opened us (moveTaskToBack).
+    setTimeout(() => {
+      if (!topOverlay()) nativePost({ cmd: "backUnhandled" });
+    }, 600);
   }
 
   // ---------------------------------------------------------------------------
@@ -1568,7 +1627,7 @@
     return false;
   }
 
-  async function pairWalletConnect(uri) {
+  async function pairWalletConnect(uri, source) {
     nativePost({ cmd: "showWallet" });
     if (walletConnectBusy) {
       showToast("Already connecting a dApp…");
@@ -1603,6 +1662,8 @@
       const outcome = await sessionWatcher.promise;
       if (outcome.kind === "connected") {
         showToast("Connected to " + (outcome.name || "dApp"), "success");
+        // Opened from a dApp on this phone: go back to it, now connected.
+        if (source === "external" || source === "dapp") setTimeout(() => returnToCaller(source), 1200);
       } else if (outcome.kind === "rejected") {
         showToast("WalletConnect: " + (outcome.error || "connection rejected"), "error", 6000);
       } else {
@@ -1640,16 +1701,18 @@
     return { promise, cancel: cleanup };
   }
 
-  function handleWalletConnectText(text) {
+  /** `source`: "external" | "dapp" | "wallet" for deep links, undefined for QR scans. */
+  function handleWalletConnectText(text, source) {
     const uri = extractWalletConnectUri(text);
     if (!uri) return false;
     // "wc:<topic>@2?requestId=…" without a symKey is a "go to wallet" link for
-    // an existing session; the approval window is already open.
+    // an existing session; the approval window is (or will shortly be) open.
     if (!/[?&]symKey=/.test(uri)) {
       nativePost({ cmd: "showWallet" });
+      armReturnToCaller(source);
       return true;
     }
-    void pairWalletConnect(uri);
+    void pairWalletConnect(uri, source);
     return true;
   }
 
@@ -1767,11 +1830,17 @@
         else if (msg.error && msg.error !== "cancelled" && msg.error !== "busy") showToast("Scan failed: " + msg.error, "error");
         break;
       case "deepLink":
-        if (!handleWalletConnectText(msg.url)) {
+        if (!handleWalletConnectText(msg.url, msg.source)) {
           try {
             const parsed = new URL(msg.url);
-            if (parsed.protocol === "https:" || parsed.protocol === "http:") openUrl(parsed.href);
-            else nativePost({ cmd: "showWallet" });
+            if (parsed.protocol === "https:" || parsed.protocol === "http:") {
+              openUrl(parsed.href);
+            } else {
+              // e.g. bare `walletchan://` or `walletchan://wc?requestId=…&sessionTopic=…`:
+              // a dApp bringing the wallet forward for a pending request.
+              nativePost({ cmd: "showWallet" });
+              armReturnToCaller(msg.source);
+            }
           } catch {
             nativePost({ cmd: "showWallet" });
           }
