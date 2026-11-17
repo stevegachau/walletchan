@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.WalletChan" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">@color/wc_background</item>
+        <item name="colorPrimary">@color/wc_accent</item>
+        <item name="colorAccent">@color/wc_accent</item>
+        <item name="android:textColorPrimary">@color/wc_text</item>
+        <item name="android:textColorSecondary">@color/wc_text_muted</item>
+    </style>
+
+    <style name="WalletChan.ToolbarButton" parent="">
+        <item name="android:layout_width">44dp</item>
+        <item name="android:layout_height">44dp</item>
+        <item name="android:background">?attr/selectableItemBackgroundBorderless</item>
+        <item name="android:scaleType">center</item>
+        <item name="tint">@color/wc_text</item>
+    </style>
+</resources>

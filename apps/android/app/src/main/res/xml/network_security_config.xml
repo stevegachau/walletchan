@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Cleartext is allowed so the dApp browser and the wallet's native fetch can reach
+  http:// endpoints (local nodes, LAN RPCs) like the browser extension can.
+  The wallet UI itself is served over https from the app (mixed content is blocked),
+  and only system CAs are trusted (no user-installed CAs).
+-->
+<network-security-config xmlns:tools="http://schemas.android.com/tools">
+    <base-config cleartextTrafficPermitted="true" tools:ignore="InsecureBaseConfiguration">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

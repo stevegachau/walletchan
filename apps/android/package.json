@@ -1,0 +1,10 @@
+{
+  "name": "@walletchan/android",
+  "private": true,
+  "description": "Android host for the WalletChan extension build (see ARCHITECTURE.md). Not part of the pnpm workspace; scripts use only Node and the repo's existing install.",
+  "type": "module",
+  "scripts": {
+    "package:web": "node scripts/package-web.mjs",
+    "test:web": "node scripts/package-web.mjs && NODE_USE_ENV_PROXY=1 node web/test/e2e.mjs"
+  }
+}

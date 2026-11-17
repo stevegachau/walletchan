@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">WalletChan</string>
+    <string name="dapp_back">Back</string>
+    <string name="dapp_reload">Reload</string>
+    <string name="dapp_stop">Stop loading</string>
+    <string name="dapp_wallet">Wallet</string>
+    <string name="dapp_close">Close browser</string>
+    <string name="dapp_url_hint">Search or enter address</string>
+    <string name="qr_prompt">Scan a WalletConnect QR code</string>
+    <string name="no_app_for_link">No app can open this link</string>
+    <string name="notification_channel_name">Wallet activity</string>
+    <string name="notification_channel_description">Transaction, signature and connection updates from WalletChan</string>
+    <string name="webview_error_title">Update Android System WebView</string>
+    <string name="webview_error_message">WalletChan runs inside Android System WebView, and the version on this device is too old or unavailable. Please update (or enable) Android System WebView from the Play Store, then reopen WalletChan.</string>
+    <string name="webview_error_button">Update WebView</string>
+    <string name="webview_missing">Android System WebView is not installed or is disabled.</string>
+    <string name="webview_outdated">WebView provider %1$s %2$s is missing required features: %3$s</string>
+</resources>

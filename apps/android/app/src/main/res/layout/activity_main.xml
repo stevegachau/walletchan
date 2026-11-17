@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Both WebViews live in this one FrameLayout for the whole app lifetime.
+  wallet_container (main WebView, added in code) is always VISIBLE so the wallet's
+  background keeps running; dapp_root is stacked above it and toggled.
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/root"
+    tools:ignore="MergeRootFrame"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <FrameLayout
+        android:id="@+id/wallet_container"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <LinearLayout
+        android:id="@+id/dapp_root"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/wc_surface"
+        android:clickable="true"
+        android:focusable="true"
+        android:orientation="vertical"
+        android:visibility="gone"
+        tools:visibility="visible">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp">
+
+            <ImageButton
+                android:id="@+id/dapp_back"
+                style="@style/WalletChan.ToolbarButton"
+                android:contentDescription="@string/dapp_back"
+                app:srcCompat="@drawable/ic_arrow_back" />
+
+            <EditText
+                android:id="@+id/dapp_url"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_marginStart="4dp"
+                android:layout_marginEnd="4dp"
+                android:layout_weight="1"
+                android:autofillHints=""
+                android:background="@drawable/url_field_background"
+                android:hint="@string/dapp_url_hint"
+                android:imeOptions="actionGo|flagNoExtractUi"
+                android:importantForAutofill="no"
+                android:inputType="textUri"
+                android:paddingStart="16dp"
+                android:paddingEnd="16dp"
+                android:selectAllOnFocus="true"
+                android:singleLine="true"
+                android:textColor="@color/wc_text"
+                android:textColorHint="@color/wc_text_muted"
+                android:textSize="15sp" />
+
+            <ImageButton
+                android:id="@+id/dapp_reload"
+                style="@style/WalletChan.ToolbarButton"
+                android:contentDescription="@string/dapp_reload"
+                app:srcCompat="@drawable/ic_refresh" />
+
+            <ImageButton
+                android:id="@+id/dapp_wallet"
+                style="@style/WalletChan.ToolbarButton"
+                android:contentDescription="@string/dapp_wallet"
+                app:srcCompat="@drawable/ic_wallet"
+                app:tint="@color/wc_accent" />
+
+            <ImageButton
+                android:id="@+id/dapp_close"
+                style="@style/WalletChan.ToolbarButton"
+                android:contentDescription="@string/dapp_close"
+                app:srcCompat="@drawable/ic_close" />
+        </LinearLayout>
+
+        <ProgressBar
+            android:id="@+id/dapp_progress"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="2dp"
+            android:indeterminate="false"
+            android:max="100"
+            android:progressTint="@color/wc_accent"
+            android:visibility="invisible" />
+
+        <FrameLayout
+            android:id="@+id/dapp_web_container"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:background="@android:color/white" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/error_root"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:padding="32dp"
+        android:visibility="gone">
+
+        <ImageView
+            android:layout_width="96dp"
+            android:layout_height="96dp"
+            android:layout_marginBottom="24dp"
+            android:contentDescription="@null"
+            app:srcCompat="@mipmap/ic_launcher" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:text="@string/webview_error_title"
+            android:textColor="@color/wc_text"
+            android:textSize="20sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:gravity="center"
+            android:text="@string/webview_error_message"
+            android:textColor="@color/wc_text"
+            android:textSize="15sp" />
+
+        <TextView
+            android:id="@+id/error_details"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:gravity="center"
+            android:textColor="@color/wc_text_muted"
+            android:textSize="12sp" />
+
+        <Button
+            android:id="@+id/error_update_button"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="@string/webview_error_button" />
+    </LinearLayout>
+</FrameLayout>

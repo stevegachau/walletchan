@@ -1,0 +1,18 @@
+# Gradle / Android Studio
+.gradle/
+build/
+app/build/
+local.properties
+.idea/
+*.iml
+.kotlin/
+captures/
+
+# Generated web runtime (scripts/package-web.mjs output)
+app/src/main/assets/www/
+
+# Signing material: NEVER commit
+keystore/
+*.jks
+*.keystore
+keystore.properties

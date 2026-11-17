@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="wc_background">#0B0E17</color>
+    <color name="wc_surface">#141826</color>
+    <color name="wc_field">#1E2335</color>
+    <color name="wc_text">#ECEAE6</color>
+    <color name="wc_text_muted">#9096A6</color>
+    <color name="wc_accent">#F5C451</color>
+    <color name="ic_launcher_background">#0B0E17</color>
+</resources>

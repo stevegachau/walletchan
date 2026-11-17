@@ -1,0 +1,166 @@
+#!/usr/bin/env node
+/*
+ * Packages the WalletChan extension build for the Android app.
+ *
+ *   apps/extension/build/**  ->  apps/android/app/src/main/assets/www/**
+ *   apps/android/web/*       ->  apps/android/app/src/main/assets/www/android/*
+ *
+ * - Injects <script src="/android/chrome-shim.js"></script> as the first
+ *   element of <head> in every HTML file (the build has no CSP <meta> tags;
+ *   the script asserts that so a future CSP meta cannot silently block it).
+ * - Generates web/dapp-inject.js from web/dapp-inject.src.js by splicing in
+ *   static/js/inpage.js and static/js/inject.js from the build, and copies it
+ *   to www/android/dapp-inject.js.
+ *
+ * Usage:  node apps/android/scripts/package-web.mjs [--build <dir>] [--out <dir>]
+ *         (or `pnpm --dir apps/android package:web`)
+ * Build the extension first: `pnpm --filter @walletchan/extension build`.
+ */
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const androidDir = path.resolve(here, "..");
+const repoRoot = path.resolve(androidDir, "..", "..");
+
+function argValue(flag, fallback) {
+  const index = process.argv.indexOf(flag);
+  return index >= 0 && process.argv[index + 1] ? path.resolve(process.argv[index + 1]) : fallback;
+}
+
+const buildDir = argValue("--build", path.join(repoRoot, "apps/extension/build"));
+const outDir = argValue("--out", path.join(androidDir, "app/src/main/assets/www"));
+const webDir = path.join(androidDir, "web");
+
+const SHIM_TAG = '<script src="/android/chrome-shim.js"></script>';
+/** Files from web/ that are served to the app (tests and sources stay out). */
+const WEB_FILES = ["chrome-shim.js", "shell.html", "shell.js", "background.html"];
+/** Build files that are useless on Android and safe to drop. */
+const SKIP_FROM_BUILD = new Set([
+  // Firefox/Chrome Web Store packaging metadata only.
+  "SOURCE_CODE.txt",
+]);
+
+async function exists(file) {
+  try {
+    await fs.access(file);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function copyDir(from, to) {
+  await fs.mkdir(to, { recursive: true });
+  for (const entry of await fs.readdir(from, { withFileTypes: true })) {
+    if (SKIP_FROM_BUILD.has(entry.name) && from === buildDir) continue;
+    const source = path.join(from, entry.name);
+    const target = path.join(to, entry.name);
+    if (entry.isDirectory()) await copyDir(source, target);
+    else await fs.copyFile(source, target);
+  }
+}
+
+async function listFiles(dir, predicate, acc = []) {
+  for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) await listFiles(full, predicate, acc);
+    else if (predicate(full)) acc.push(full);
+  }
+  return acc;
+}
+
+/** Inserts the shim as the first element of <head>. */
+export function injectShim(html, file = "<html>") {
+  if (/http-equiv\s*=\s*["']?content-security-policy/i.test(html)) {
+    // A CSP meta would apply to our inline-free shim too ('self' allows it),
+    // but flag it so a stricter policy gets reviewed.
+    console.warn(`[package-web] ${file} has a CSP <meta>; verify it allows /android/*.js`);
+  }
+  if (html.includes(SHIM_TAG)) return html;
+  const headOpen = html.match(/<head(\s[^>]*)?>/i);
+  if (headOpen) {
+    const at = headOpen.index + headOpen[0].length;
+    return html.slice(0, at) + "\n    " + SHIM_TAG + html.slice(at);
+  }
+  const htmlOpen = html.match(/<html(\s[^>]*)?>/i);
+  if (htmlOpen) {
+    const at = htmlOpen.index + htmlOpen[0].length;
+    return html.slice(0, at) + "\n  <head>" + SHIM_TAG + "</head>" + html.slice(at);
+  }
+  throw new Error(`Cannot find <head> or <html> in ${file}`);
+}
+
+/**
+ * popup-init.html is the action popup's bootstrap: a 360x600 canvas plus a
+ * meta refresh to /index.html. The shell never loads it, but if anything
+ * does, make it a full-screen redirect.
+ */
+function adaptPopupInit(html) {
+  return html.replace(/width:\s*360px;\s*height:\s*600px;/, "width: 100%; height: 100%;");
+}
+
+async function buildDappInject() {
+  const template = await fs.readFile(path.join(webDir, "dapp-inject.src.js"), "utf8");
+  const inpage = await fs.readFile(path.join(buildDir, "static/js/inpage.js"), "utf8");
+  const inject = await fs.readFile(path.join(buildDir, "static/js/inject.js"), "utf8");
+  for (const [name, source] of [
+    ["inpage.js", inpage],
+    ["inject.js", inject],
+  ]) {
+    if (/^\s*(import|export)\s/m.test(source)) {
+      throw new Error(`${name} looks like an ES module; dapp-inject.js needs a classic script bundle`);
+    }
+  }
+  const strip = (source) => source.replace(/\/\/# sourceMappingURL=.*$/gm, "");
+  const marker = (name) => `/*__WALLETCHAN_${name}__*/`;
+  for (const name of ["INPAGE", "CONTENT_SCRIPT"]) {
+    if (template.split(marker(name)).length !== 2) throw new Error(`template must contain ${marker(name)} exactly once`);
+  }
+  const banner =
+    "/* GENERATED by apps/android/scripts/package-web.mjs from web/dapp-inject.src.js and the extension build. Do not edit. */\n";
+  // Function replacements: bundle text may contain `$&`-style sequences.
+  return (
+    banner +
+    template
+      .replace(marker("INPAGE"), () => "\n" + strip(inpage) + "\n")
+      .replace(marker("CONTENT_SCRIPT"), () => "\n" + strip(inject) + "\n")
+  );
+}
+
+async function main() {
+  if (!(await exists(path.join(buildDir, "manifest.json")))) {
+    throw new Error(`No extension build at ${buildDir}. Run: pnpm --filter @walletchan/extension build`);
+  }
+  console.log(`[package-web] ${path.relative(repoRoot, buildDir)} -> ${path.relative(repoRoot, outDir)}`);
+  await fs.rm(outDir, { recursive: true, force: true });
+  await copyDir(buildDir, outDir);
+
+  const htmlFiles = await listFiles(outDir, (file) => file.endsWith(".html"));
+  for (const file of htmlFiles) {
+    let html = await fs.readFile(file, "utf8");
+    if (path.basename(file) === "popup-init.html") html = adaptPopupInit(html);
+    html = injectShim(html, path.relative(outDir, file));
+    await fs.writeFile(file, html);
+  }
+  console.log(`[package-web] injected chrome-shim into ${htmlFiles.length} HTML files`);
+
+  const androidOut = path.join(outDir, "android");
+  await fs.mkdir(androidOut, { recursive: true });
+  for (const name of WEB_FILES) {
+    await fs.copyFile(path.join(webDir, name), path.join(androidOut, name));
+  }
+
+  const dappInject = await buildDappInject();
+  await fs.writeFile(path.join(webDir, "dapp-inject.js"), dappInject);
+  await fs.writeFile(path.join(androidOut, "dapp-inject.js"), dappInject);
+  console.log(`[package-web] wrote dapp-inject.js (${Math.round(dappInject.length / 1024)} KiB)`);
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error("[package-web] failed:", error.message);
+    process.exit(1);
+  });
+}
