@@ -505,6 +505,15 @@
       callback(undefined, "Extension context invalidated.");
       return;
     }
+    if (ctx.role === "ui" && inlineRequest) {
+      let type = null;
+      try {
+        type = JSON.parse(messageJson).type;
+      } catch {
+        type = null;
+      }
+      if (type) callback = trackDecision(type, callback);
+    }
     deliverRuntimeMessage(contextId, messageJson, senderForContext(ctx), callback);
   }
 
@@ -939,13 +948,60 @@
     if (overlayWindows.size > 0) return; // popup mode: overlays handle returning
     const armed = pendingReturn && Date.now() < pendingReturn.until ? pendingReturn.source : null;
     const returnTo = ownedByPairing ? null : dappVisible && dappTab ? "dapp" : armed;
-    if (!inlineRequest) inlineRequest = { since: Date.now(), returnTo, leftHome: false, pairing: ownedByPairing };
+    if (!inlineRequest) inlineRequest = { since: Date.now(), returnTo, leftHome: false, pairing: ownedByPairing, requests: 0, decided: 0 };
+    if (!ownedByPairing) inlineRequest.requests += 1;
     else if (ownedByPairing) {
       inlineRequest.pairing = true;
       inlineRequest.returnTo = null;
     } else if (returnTo && !inlineRequest.returnTo && !inlineRequest.pairing) inlineRequest.returnTo = returnTo;
     nativePost({ cmd: "showWallet" });
     nativePost({ cmd: "requestAttention", title: "WalletChan", message: "A dApp is waiting for your approval. Tap to review." });
+  }
+
+  /**
+   * The wallet UI's own decision messages. The background answers them only
+   * after the dApp's reply is published, which can take ~6 s when the dApp's
+   * tab is frozen; we return on the tap instead (after a short grace so an
+   * immediate local failure keeps the user here to see it).
+   */
+  const DECISION_TYPES = new Set([
+    "confirmTransaction", "confirmTransactionAsync", "confirmTransactionAsyncPK", "confirmImpersonatedTransaction",
+    "confirmBatchTransactionAsync", "confirmBatchTransactionAsyncPK", "confirmSignatureRequest",
+    "confirmErc7715PermissionRequest", "confirmCrossDappBatch", "confirmAddChain", "confirmWatchAsset",
+    "confirmDappConnection", "rejectTransaction", "rejectBatchTransaction", "rejectSignatureRequest",
+    "rejectErc7715PermissionRequest", "rejectCrossDappBatch", "rejectAddChain", "rejectWatchAsset",
+    "rejectDappConnection", "approveSafeProposal",
+  ]);
+  const DECISION_GRACE_MS = 400;
+
+  /** Wraps a UI decision's callback; returns the callback to use. */
+  function trackDecision(type, callback) {
+    const request = inlineRequest;
+    if (!request || !request.returnTo || !DECISION_TYPES.has(type)) return callback;
+    let counted = false;
+    let failed = false;
+    const count = () => {
+      if (counted || failed || inlineRequest !== request) return;
+      counted = true;
+      request.decided += 1;
+      if (request.decided >= request.requests) {
+        inlineRequest = null;
+        holdKeepAlive(30_000); // the reply is still being published
+        returnToCaller(request.returnTo);
+      }
+    };
+    setTimeout(count, DECISION_GRACE_MS);
+    return (json, error) => {
+      let response = null;
+      try {
+        response = json === undefined ? null : JSON.parse(json);
+      } catch {
+        response = null;
+      }
+      if (error || (response && typeof response === "object" && response.success === false)) failed = true;
+      else count();
+      callback(json, error);
+    };
   }
 
   /** Called from the 500 ms UI tick. */
@@ -977,11 +1033,51 @@
    * background. Requests then arrive immediately.
    */
   let reportedWcSessions = -1;
+  let knownSessionCount = 0;
+  let keepAliveHolds = 0;
   function reportWalletConnectSessions(count) {
-    const n = Number.isFinite(count) ? count : 0;
+    if (Number.isFinite(count)) knownSessionCount = count;
+    // Pairings in progress and answers still being published count too, so
+    // Android doesn't freeze the app before its reply reaches the relay.
+    const n = knownSessionCount + keepAliveHolds;
     if (n === reportedWcSessions) return;
     reportedWcSessions = n;
     nativePost({ cmd: "wcSessions", count: n });
+  }
+
+  function holdKeepAlive(ms) {
+    keepAliveHolds += 1;
+    reportWalletConnectSessions();
+    setTimeout(() => {
+      keepAliveHolds -= 1;
+      reportWalletConnectSessions();
+    }, ms);
+  }
+
+  /** A message to show the next time the wallet is on screen. */
+  let deferredToast = null;
+  function showWhenVisible(text) {
+    if (appVisible) showToast(text, "error", 7000);
+    else deferredToast = text;
+  }
+
+  /** After returning early on Connect, report a late approval failure. */
+  function watchApprovalFailure(proposalId) {
+    const observer = (message) => {
+      if (message && message.type === "walletConnectProposalRejected") {
+        stop();
+        showWhenVisible("Couldn't connect: " + ((message.rejection && message.rejection.error) || "the app's request was rejected"));
+      } else if (message && message.type === "walletConnectSessionsChanged") {
+        stop();
+      }
+    };
+    const stop = () => {
+      const index = busObservers.indexOf(observer);
+      if (index >= 0) busObservers.splice(index, 1);
+    };
+    busObservers.push(observer);
+    setTimeout(stop, 90_000);
+    void proposalId;
   }
 
   async function refreshWalletConnectSessionCount() {
@@ -1832,7 +1928,13 @@
    * user can read them.
    */
   function finishWalletConnectPairing(outcome, returnTo) {
-    if (outcome.kind === "connected" || outcome.kind === "userRejected") {
+    if (outcome.kind === "approvedByUser") {
+      // Approval is still being published; keep the app alive meanwhile and
+      // surface a failure the next time the wallet is on screen.
+      holdKeepAlive(30_000);
+      watchApprovalFailure(outcome.proposalId);
+    }
+    if (outcome.kind === "connected" || outcome.kind === "approvedByUser" || outcome.kind === "userRejected") {
       // No success/rejection toast: the dApp shows the result. Hand back
       // to the calling app at once.
       hideToast();
@@ -1864,6 +1966,8 @@
     let timer;
     let proposalId = null;
     walletConnectPairings += 1;
+    keepAliveHolds += 1; // released in cleanup()
+    reportWalletConnectSessions();
     const promise = new Promise((resolve) => {
       const arm = (ms, kind) => {
         clearTimeout(timer);
@@ -1871,6 +1975,17 @@
       };
       observer = (message) => {
         if (!message || typeof message !== "object") return;
+        // The user's tap is the outcome. kit.approveSession/rejectSession wait
+        // for the relay to acknowledge, which takes ~6 s when the dApp's tab
+        // is frozen in the background; don't make the user wait for that.
+        if (
+          (message.type === "walletConnectApproveProposal" || message.type === "walletConnectRejectProposal") &&
+          proposalId !== null &&
+          message.proposalId === proposalId
+        ) {
+          resolve({ kind: message.type === "walletConnectApproveProposal" ? "approvedByUser" : "userRejected", proposalId });
+          return;
+        }
         if (message.type === "walletConnectSessionsChanged" && Array.isArray(message.sessions)) {
           const fresh = message.sessions.find((s) => s && !knownTopics.has(s.topic));
           if (fresh) resolve({ kind: "connected", name: (fresh.peer && fresh.peer.name) || fresh.name || fresh.peerName });
@@ -1893,6 +2008,8 @@
       if (cleaned) return;
       cleaned = true;
       walletConnectPairings -= 1;
+      keepAliveHolds -= 1;
+      reportWalletConnectSessions();
       clearTimeout(timer);
       const index = busObservers.indexOf(observer);
       if (index >= 0) busObservers.splice(index, 1);
@@ -1920,7 +2037,7 @@
     const watcher = waitForWalletConnectOutcome(knownTopics);
     await rememberWalletConnectTopics(knownTopics);
     const outcome = await watcher.promise;
-    if (outcome.kind !== "connected" && outcome.kind !== "userRejected") return;
+    if (outcome.kind !== "connected" && outcome.kind !== "approvedByUser" && outcome.kind !== "userRejected") return;
     finishWalletConnectPairing(outcome, "external");
   }
 
@@ -2029,6 +2146,10 @@
         // instead of on the next 20 s keepalive tick.
         nudgeRelay();
         appVisible = true;
+        if (deferredToast) {
+          showToast(deferredToast, "error", 7000);
+          deferredToast = null;
+        }
         // A prompt cancelled by leaving the app may show again — but the system
         // biometric dialog itself pauses/resumes the activity on many phones;
         // never re-prompt while a fingerprint unlock is still in progress.
