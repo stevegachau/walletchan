@@ -313,6 +313,31 @@ export async function runWalletConnectSuite(browser, { pass, assert, relevantErr
     await expectSingleReturn(w.native, pasteMark, "return to the browser after a pasted-link connect");
     pass("wc: pasting the link shows the review, connects, and returns to the browser once");
 
+    // Regression: after a WebView restart WalletKit re-announces the existing
+    // sessions; that must not count as "connected" for a new link and send the
+    // user back before they tap Connect.
+    const afterRestart = await dapp.connect({
+      optionalNamespaces: {
+        eip155: { chains: ["eip155:1"], methods: ["personal_sign"], events: ["accountsChanged"] },
+      },
+    });
+    const afterRestartApproval = afterRestart.approval();
+    afterRestartApproval.catch(() => {});
+    await w.shell.reload();
+    await mainUiFrame(w.shell);
+    const restartMark = w.native.commands.length;
+    await w.native.toShell({ type: "deepLink", url: afterRestart.uri, source: "external" });
+    const restartReview = await connectionReview(w.shell);
+    await w.shell.waitForTimeout(4_000);
+    assert(
+      !w.native.commands.slice(restartMark).some((cmd) => cmd.cmd === "backUnhandled"),
+      "no return to the browser before Connect is tapped (after a restart)",
+    );
+    await reviewAction(restartReview, "Connect");
+    await withTimeout(afterRestartApproval, 90_000, "session approval after restart");
+    await expectSingleReturn(w.native, restartMark, "return after Connect following a restart");
+    pass("wc: after a restart, a new link waits on the Connect screen until Connect is tapped");
+
     const errors = relevantErrors(w.consoleErrors);
     if (errors.length) console.log("    console errors:\n      " + errors.slice(0, 20).join("\n      "));
   } catch (error) {

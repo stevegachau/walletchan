@@ -1980,16 +1980,16 @@
         // is frozen in the background; don't make the user wait for that.
         if (
           (message.type === "walletConnectApproveProposal" || message.type === "walletConnectRejectProposal") &&
-          proposalId !== null &&
-          message.proposalId === proposalId
+          (proposalId === null || message.proposalId === proposalId)
         ) {
           resolve({ kind: message.type === "walletConnectApproveProposal" ? "approvedByUser" : "userRejected", proposalId });
           return;
         }
-        if (message.type === "walletConnectSessionsChanged" && Array.isArray(message.sessions)) {
-          const fresh = message.sessions.find((s) => s && !knownTopics.has(s.topic));
-          if (fresh) resolve({ kind: "connected", name: (fresh.peer && fresh.peer.name) || fresh.name || fresh.peerName });
-        } else if (message.type === "walletConnectProposalRejected") {
+        // Every connection now goes through the Connect review, so the user's
+        // tap (above) is the only "connected" signal. A sessions broadcast is
+        // NOT one: on a restart WalletKit re-announces existing sessions,
+        // which looked "new" and sent the user back before they tapped.
+        if (message.type === "walletConnectProposalRejected") {
           resolve({ kind: "rejected", error: message.rejection && message.rejection.error });
         } else if (message.type === "walletConnectProposalUserRejected") {
           if (proposalId === null || message.proposalId === proposalId) resolve({ kind: "userRejected", name: message.name });
